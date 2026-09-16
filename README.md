@@ -90,6 +90,10 @@ servidor del laboratorio (repositorios privados de otro equipo).
 aplicable con `git am`, con su README explicando qué toca, qué no toca y cómo
 montarlo.
 
+Este repositorio es **privado**, así que la entrega no se comparte por enlace:
+se envía como archivo o se da acceso de lectura a quien deba revisarla. Los
+parches son autocontenidos y no necesitan el resto del repositorio.
+
 ## Documentación
 
 El análisis de la migración, los procedimientos de prueba y el checklist previo
