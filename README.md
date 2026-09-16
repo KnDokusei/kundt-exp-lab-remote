@@ -1,4 +1,4 @@
-# PROYECTO_IOT_TUBO
+# kundt-exp-lab-remote
 
 Firmware **ESP-IDF** para el Laboratorio Remoto — Tubo de Kundt (USM).
 
