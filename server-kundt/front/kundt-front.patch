@@ -15,6 +15,57 @@ index 513c396..4e7906d 100644
  export const CAMERA_VIDEO_BASE = "video";
  export const GET_CAMERAS_BY_PLATFORM = API_STRING_BASE + "/" + CAMERA_VIDEO_BASE + "/" + "camera-platform" + "/";
 \ No newline at end of file
+diff --git a/src/components/cameraviewer/CameraViewer.tsx b/src/components/cameraviewer/CameraViewer.tsx
+index 6b1c035..4e51d61 100644
+--- a/src/components/cameraviewer/CameraViewer.tsx
++++ b/src/components/cameraviewer/CameraViewer.tsx
+@@ -11,6 +11,10 @@ import ZoomOutMapIcon from '@mui/icons-material/ZoomOutMap';
+ interface CameraViewerProps {
+     width: number;
+     cameraInfo: CameraOBJ;
++    /* Estado inicial del volteo vertical, para camaras montadas del reves.
++     * Omitirlo deja el comportamiento anterior: sin voltear, y el boton sigue
++     * disponible para cambiarlo en caliente. */
++    defaultFlipped?: boolean;
+ }
+ 
+ 
+@@ -23,7 +27,7 @@ export default function CameraViewer(props: CameraViewerProps) {
+     const status = props.cameraInfo.status;
+     const stream_url = convertName2Stream(props.cameraInfo.name);
+ 
+-    const [flipped, setFlipped] = React.useState<boolean>(false);
++    const [flipped, setFlipped] = React.useState<boolean>(props.defaultFlipped ?? false);
+     const [camera_position, setCameraPosition] = React.useState<number>(0);
+     const [not_found, setNotFound] = React.useState<boolean>(false);
+     const [loading, setLoading] = React.useState<boolean>(true);
+diff --git a/src/components/cameraviewer/CamerasDisplay.tsx b/src/components/cameraviewer/CamerasDisplay.tsx
+index 0166f21..65fa3ed 100644
+--- a/src/components/cameraviewer/CamerasDisplay.tsx
++++ b/src/components/cameraviewer/CamerasDisplay.tsx
+@@ -6,6 +6,8 @@ interface CameraDisplayProps {
+     camera_list: CameraOBJ[];
+     camera_position?: number;
+     setCameraPosition?: (pos: number) => void;
++    /* Nombres de camara que arrancan volteadas verticalmente. */
++    flipped_cameras?: string[];
+ }
+ 
+ const MAX_PERCENTAGE_LENGTH_VIEWER = 90;
+@@ -36,7 +38,12 @@ export default function CamerasDisplay(props: CameraDisplayProps) {
+                         maxWidth: {xs:"100%", md:"50%"},
+                     }}
+                 >
+-                    <CameraViewer cameraInfo={camera} width={computed_width} key={camera.id} />
++                    <CameraViewer
++                        cameraInfo={camera}
++                        width={computed_width}
++                        key={camera.id}
++                        defaultFlipped={props.flipped_cameras?.includes(camera.name)}
++                    />
+                 </Grid>
+             ))}
+         </Grid>
 diff --git a/src/pages/Router.tsx b/src/pages/Router.tsx
 index cc01037..f24f4e6 100644
 --- a/src/pages/Router.tsx

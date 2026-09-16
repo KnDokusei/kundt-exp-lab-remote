@@ -42,11 +42,23 @@ export interface KundtSensors {
 	counter_limit?: boolean;
 }
 
-export interface KundtSSE {
+/*
+ * Forma del mensaje que llega por MQTT desde los modulos. NO es la que sale por
+ * SSE hacia el navegador.
+ */
+export interface KundtMQTT {
 	device: ESP32Device;
 	actuators: KundtActuators;
 	sensors: KundtSensors;
 }
+
+/*
+ * Lo que emite de verdad @Sse('kundt-updates'): la fila entera de Prisma, plana
+ * y sin envolver (mqtt-listener.service.ts publica `updated_entry` tal cual).
+ * Antes este tipo declaraba {device, actuators, sensors} y el manejador leia
+ * data.sensors, que siempre era undefined: la vista jamas se actualizaba.
+ */
+export type KundtSSE = KundtStatusDTO;
 
 export interface KundtStatusDTO {
 	id: number;

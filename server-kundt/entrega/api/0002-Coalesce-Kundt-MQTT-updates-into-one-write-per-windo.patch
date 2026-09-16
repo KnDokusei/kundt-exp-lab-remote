@@ -1,0 +1,130 @@
+From 004aafa4bfc2eea6dc11495951561c37501b5345 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Wed, 16 Sep 2026 15:59:42 -0300
+Subject: [PATCH 2/3] Coalesce Kundt MQTT updates into one write per window
+
+The microphone module publishes a Goertzel window every 93 ms, so the handler
+was issuing about 13 Prisma updates per second against a single row, each one
+also emitting on SSE and logging the whole row to stdout. On a local bench with
+three boards that was 139501 tuple versions on one row in an afternoon, 46 MB
+of stdout, postgres at 9.73% CPU and the browser redrawing at 13 Hz.
+
+Fields are now merged in memory and flushed once per window, default 250 ms,
+overridable with KUNDT_FLUSH_MS. Partial merging is preserved: two modules
+reporting inside the same window are carried in one flush. Writes drop to 3/s,
+postgres to 0.73%, stdout to 35 KB and SSE to 3.5 Hz. At 4 Hz a plunger sweep
+at 2 cm/s still yields a sample every half centimetre.
+
+The per-row console.log moves behind KUNDT_DEBUG_ROWS=1. The non-null assertion
+on exp_entry becomes an early return: an unknown device.id used to throw
+TypeError and drop the message silently.
+---
+ src/mqtt-listener/mqtt-listener.service.ts | 86 +++++++++++++++++-----
+ 1 file changed, 67 insertions(+), 19 deletions(-)
+
+diff --git a/src/mqtt-listener/mqtt-listener.service.ts b/src/mqtt-listener/mqtt-listener.service.ts
+index d80c991..01cb448 100644
+--- a/src/mqtt-listener/mqtt-listener.service.ts
++++ b/src/mqtt-listener/mqtt-listener.service.ts
+@@ -11,6 +11,25 @@ import { PrismaService } from 'src/prisma/prisma.service';
+ export class MqttListenerService {
+     constructor(private prisma: PrismaService, private eventEmitter: EventEmitter2) { }
+ 
++    /*
++     * Coalescencia de las publicaciones del tubo de Kundt.
++     *
++     * E1 publica una ventana de Goertzel cada 93 ms: 10,8 Hz. Escribir en
++     * PostgreSQL y emitir por SSE en cada una costaba 13 escrituras por segundo
++     * sobre UNA fila (139 mil versiones de tupla en una tarde, con su purga
++     * detras) y obligaba al navegador a redibujar la grafica al mismo ritmo.
++     *
++     * Aqui se acumulan los campos en memoria y se vuelca una sola vez por
++     * ventana. La fusion parcial se conserva: si E1 manda amplitud y E3 manda
++     * posicion dentro de la misma ventana, el volcado lleva las dos.
++     *
++     * A 4 Hz un barrido del embolo a 2 cm/s sigue dando un punto cada medio
++     * centimetro, de sobra para localizar las resonancias.
++     */
++    private static readonly KUNDT_FLUSH_MS = Number(process.env.KUNDT_FLUSH_MS ?? 250);
++    private kundtPending = new Map<number, Record<string, any>>();
++    private kundtTimer = new Map<number, NodeJS.Timeout>();
++
+     async updateTankStatus(payload: TankMQTT)
+     {
+         let controller_id = payload.device.id;
+@@ -120,27 +139,56 @@ export class MqttListenerService {
+                 controller_id: controller_id
+             }
+         });
++        if (!exp_entry) return;
++
++        const id = exp_entry.id;
++
++        /* Fusion en memoria: undefined no pisa lo que otro modulo ya dejo. */
++        const pending = this.kundtPending.get(id) ?? {};
++        const incoming = {
++            frequency:       payload.actuators?.frequency,
++            volume:          payload.actuators?.volume,
++            plunger_pos:     payload.actuators?.plunger_pos,
++            mic_amplitude:   payload.sensors?.mic_amplitude,
++            mic_rms:         payload.sensors?.mic_rms,
++            mic_peak:        payload.sensors?.mic_peak,
++            plunger_actual:  payload.sensors?.plunger_actual,
++            clockwise_limit: payload.sensors?.clockwise_limit,
++            counter_limit:   payload.sensors?.counter_limit,
++        };
++        for (const [key, value] of Object.entries(incoming)) {
++            if (value !== undefined) pending[key] = value;
++        }
++        this.kundtPending.set(id, pending);
++
++        if (this.kundtTimer.has(id)) return;
++
++        this.kundtTimer.set(id, setTimeout(
++            () => { void this.flushKundt(id); },
++            MqttListenerService.KUNDT_FLUSH_MS,
++        ));
++    }
+ 
+-        const updated_entry = await this.prisma.kundt.update({
+-            where: {
+-                id: exp_entry!.id
+-            },
+-            data: {
+-                frequency:       payload.actuators?.frequency,
+-                volume:          payload.actuators?.volume,
+-                plunger_pos:     payload.actuators?.plunger_pos,
+-                mic_amplitude:   payload.sensors?.mic_amplitude,
+-                mic_rms:         payload.sensors?.mic_rms,
+-                mic_peak:        payload.sensors?.mic_peak,
+-                plunger_actual:  payload.sensors?.plunger_actual,
+-                clockwise_limit: payload.sensors?.clockwise_limit,
+-                counter_limit:   payload.sensors?.counter_limit,
++    private async flushKundt(id: number)
++    {
++        this.kundtTimer.delete(id);
++        const data = this.kundtPending.get(id);
++        this.kundtPending.delete(id);
++        if (!data || Object.keys(data).length === 0) return;
++
++        try {
++            const updated_entry = await this.prisma.kundt.update({ where: { id }, data });
++            this.eventEmitter.emit('kundt-update', updated_entry);
++
++            /* El volcado del registro va detras de una variable de entorno: a
++             * 4 Hz eran 45 MB de log en una sesion, y a 13 Hz mucho mas. */
++            if (process.env.KUNDT_DEBUG_ROWS === '1') {
++                console.log("[Kundt] UPDATED_ENTRY: ", updated_entry);
+             }
+-        })
+-
+-        console.log("[Kundt] UPDATED_ENTRY: ", updated_entry);
+-
+-        this.eventEmitter.emit('kundt-update', updated_entry);
++        }
++        catch (error) {
++            console.error("[Kundt] no se pudo volcar la fila:", error);
++        }
+     }
+ 
+ 

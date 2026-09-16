@@ -1,10 +1,9 @@
-import { Alert, Box, Card, CardContent, Chip, Grid, LinearProgress, Stack, TextField, Typography, useTheme } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { Alert, Box, Card, CardContent, Chip, Grid, InputAdornment, LinearProgress, Slider, Stack, TextField, Typography, useTheme } from "@mui/material";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLoaderData, useParams } from "react-router";
 import { ResponsiveLine } from "@nivo/line";
 
 import CamerasDisplay from "../../../components/cameraviewer/CamerasDisplay";
-import SliderComponent from "../../../components/slidercomponent/SliderComponent";
 import { ButtonCB } from "../../../components/buttons/button";
 import { CardTitle } from "../../../components/misc/Title";
 import { useSnackbar } from "../../../components/toast/ToastProvider";
@@ -45,6 +44,61 @@ const TONE_RATIO_THRESHOLD = 50;
 const REFERENCE_SPEED_MS = 343;
 
 const MAX_SAMPLES = 600;
+
+/*
+ * Margen antes de dar por caida la conexion. fetchEventSource reintenta solo y
+ * un reintento normal tarda ~1 s; avisar antes de eso convierte cada hipo de red
+ * y cada cambio de pestaña en una alarma falsa.
+ */
+const LINK_GRACE_MS = 4000;
+
+/* Por encima de esto los datos en pantalla dejan de considerarse frescos. */
+const STALE_MS = 3000;
+
+/*
+ * Camaras montadas fisicamente del reves. Es un apaño de presentacion: el
+ * arreglo de fondo es set_vflip() en el firmware de esa placa, que corrige la
+ * imagen en origen y vale tambien para go2rtc y para cualquier otro consumidor.
+ * Requiere acceso USB a la camara, asi que mientras tanto se corrige aqui.
+ */
+const FLIPPED_CAMERAS = ["kundt1-cam3"];
+
+/*
+ * Recorrido util del riel, en cm desde el parlante. Son las posiciones de los
+ * dos fines de carrera en el firmware de E3 (stepper_math.h): fuera de ahi el
+ * embolo no puede ir, asi que la barra no debe ofrecerlo.
+ */
+const PLUNGER_MIN_CM = 26;
+const PLUNGER_MAX_CM = 84;
+
+/*
+ * La barra de frecuencia es logaritmica. En lineal, 20 Hz a 20 kHz deja todo
+ * el rango util del experimento (unos cientos de Hz a unos pocos kHz) apretado
+ * en el primer 10% del recorrido, y un pixel vale 200 Hz.
+ */
+const freqToSlider = (hz: number) =>
+    100 * Math.log(hz / FREQ_MIN_HZ) / Math.log(FREQ_MAX_HZ / FREQ_MIN_HZ);
+const sliderToFreq = (pos: number) =>
+    Math.round(FREQ_MIN_HZ * Math.pow(FREQ_MAX_HZ / FREQ_MIN_HZ, pos / 100));
+
+const FREQ_MARKS = [100, 1000, 10000].map((hz) => ({
+    value: freqToSlider(hz),
+    label: hz >= 1000 ? `${hz / 1000}k` : String(hz),
+}));
+
+/*
+ * La barra del embolo va invertida: 84 cm a la izquierda y 26 a la derecha, para
+ * que la barra se mueva en el mismo sentido que el embolo en el montaje.
+ *
+ * Se consigue trabajando en escala negada (-84 .. -26) en vez de con un
+ * transform CSS: scaleX(-1) voltearia tambien las etiquetas de las marcas y los
+ * numeros saldrian espejados. Aqui solo se niega el valor al entrar y al salir,
+ * y todo lo que se lee en pantalla sigue en centimetros normales.
+ */
+const toSliderCm = (cm: number) => -cm;
+const fromSliderCm = (value: number) => -value;
+
+const PLUNGER_MARKS = [26, 40, 55, 70, 84].map((cm) => ({ value: toSliderCm(cm), label: String(cm) }));
 
 const VOLUME_MARKS = [
     { value: 0, label: "0" },
@@ -124,11 +178,36 @@ export default function Kundt() {
     });
 
     const [frequency, setFrequency] = useState<number>(initial.frequency);
-    const [frequencyInput, setFrequencyInput] = useState<string>(String(initial.frequency));
-    const [volume, setVolume] = useState<number>(initial.volume);
-    const [plungerTarget, setPlungerTarget] = useState<string>(String(initial.plunger_pos));
+
+    /*
+     * Valor que sigue al dedo mientras se arrastra. La consigna se publica solo
+     * al soltar (onChangeCommitted): con onChange cada pixel del recorrido seria
+     * un mensaje MQTT y una escritura en PostgreSQL.
+     */
+    /*
+     * Mientras se arrastra, el SSE no debe mover la barra bajo el dedo: el
+     * servidor sigue emitiendo la consigna vieja hasta que soltamos y llega la
+     * nueva, asi que sincronizar en ese momento la haria saltar hacia atras.
+     */
+    const draggingRef = useRef(false);
+
+    const [freqDraft, setFreqDraft] = useState<number>(initial.frequency);
+    /* Texto de la caja de frecuencia. Va aparte del numero porque mientras se
+     * escribe hay estados intermedios que no son una frecuencia valida ("", "1",
+     * "12"): convertirlos en consigna mandaria al DDS a 1 Hz de paso. */
+    const [freqText, setFreqText] = useState<string>(String(initial.frequency));
+    const [volumeDraft, setVolumeDraft] = useState<number>(initial.volume);
+    const [plungerDraft, setPlungerDraft] = useState<number>(initial.plunger_pos);
 
     const [samples, setSamples] = useState<KundtSample[]>([]);
+
+    /* Estado del enlace y edad del ultimo dato, para que la vista diga si lo que
+     * muestra es de ahora o quedo congelado. */
+    const [linkUp, setLinkUp] = useState<boolean>(true);
+    const [lastUpdate, setLastUpdate] = useState<number>(0);
+    const [now, setNow] = useState<number>(Date.now());
+    const dropTimerRef = useRef<number | null>(null);
+    const warnedRef = useRef<boolean>(false);
     const [listening, setListening] = useState<boolean>(false);
 
     /* Web Audio graph for the reconstructed tone. Kept in refs so re-renders do
@@ -148,9 +227,22 @@ export default function Kundt() {
     const saturating = peak >= PEAK_SATURATION;
     const headroom = peak > 0 ? PEAK_FULL_SCALE / peak : 0;
 
-    const resonances = findResonances(samples);
+    /*
+     * Estos tres derivados recorren y ordenan hasta 600 muestras. Sin memoizar
+     * se rehacian en CADA render, incluido el tic de un segundo del indicador de
+     * frescura, y como chartData nacia como array nuevo cada vez, @nivo volvia a
+     * dibujar la grafica entera aunque no hubiera llegado ni un dato.
+     */
+    const resonances = useMemo(() => findResonances(samples), [samples]);
     const measuredSpeed = speedFromResonances(resonances, frequency);
     const expectedSpacing = frequency > 0 ? (REFERENCE_SPEED_MS / frequency / 2) * 100 : 0;
+
+    /* Reloj propio: sin el, "hace 4 s" se quedaria escrito hasta que llegara el
+     * siguiente dato, que es justo el caso en que interesa que avance. */
+    useEffect(() => {
+        const tick = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(tick);
+    }, []);
 
     useEffect(() => {
         getCameraList(platform_id)
@@ -161,30 +253,87 @@ export default function Kundt() {
     useEffect(() => {
         const closeSSE = startAuthenticatedSSE<KundtSSE>({
             url: SSE_KUNDT_UPDATES,
-            onMessage: (data) => {
-                if (data.sensors) {
-                    setSensors((previous) => ({ ...previous, ...data.sensors }));
-
-                    /* Only log a sweep point when both halves are present: the
-                     * measurement is meaningless without the position it was
-                     * taken at, and E1 and E3 publish independently. */
-                    const position = data.sensors.plunger_actual;
-                    const level = data.sensors.mic_amplitude;
-                    if (position !== undefined && level !== undefined) {
-                        setSamples((previous) => {
-                            const next = [...previous, { position, amplitude: level }];
-                            return next.length > MAX_SAMPLES ? next.slice(next.length - MAX_SAMPLES) : next;
-                        });
-                    }
+            onOpen: () => {
+                setLinkUp(true);
+                /* Si veniamos de un corte sostenido, avisar de la recuperacion:
+                 * el usuario ya vio el error y merece saber que se arreglo. */
+                if (warnedRef.current) {
+                    warnedRef.current = false;
+                    showSnackBar({ severity: "success", message: "Conexión con el experimento restablecida." });
                 }
-                if (data.actuators) {
-                    if (data.actuators.frequency !== undefined) setFrequency(data.actuators.frequency);
-                    if (data.actuators.volume !== undefined) setVolume(data.actuators.volume);
+                if (dropTimerRef.current) {
+                    window.clearTimeout(dropTimerRef.current);
+                    dropTimerRef.current = null;
                 }
             },
-            onError: () => showSnackBar({ severity: "error", message: "Se perdió la conexión con el experimento." }),
+            onMessage: (data) => {
+                /*
+                 * El flujo no esta filtrado por plataforma: la API emite la fila
+                 * de cualquier tubo que reporte. Con un solo kit da igual, con
+                 * cinco no.
+                 */
+                if (data.id !== initial.id) return;
+
+                setLinkUp(true);
+                setLastUpdate(Date.now());
+
+                setSensors({
+                    mic_amplitude: data.mic_amplitude,
+                    mic_rms: data.mic_rms,
+                    mic_peak: data.mic_peak,
+                    plunger_actual: data.plunger_actual,
+                    clockwise_limit: data.clockwise_limit,
+                    counter_limit: data.counter_limit,
+                });
+
+                /*
+                 * La fila llega entera 13 veces por segundo, asi que posicion y
+                 * amplitud siempre vienen juntas. Se guarda un punto solo cuando
+                 * alguna de las dos cambia: si no, la curva se llenaria de cientos
+                 * de muestras identicas con el embolo quieto y el historial util
+                 * quedaria reducido a unos segundos.
+                 */
+                setSamples((previous) => {
+                    const last = previous[previous.length - 1];
+                    if (last && last.position === data.plunger_actual && last.amplitude === data.mic_amplitude) {
+                        return previous;
+                    }
+                    const next = [...previous, { position: data.plunger_actual, amplitude: data.mic_amplitude }];
+                    return next.length > MAX_SAMPLES ? next.slice(next.length - MAX_SAMPLES) : next;
+                });
+
+                setFrequency(data.frequency);
+                if (!draggingRef.current) {
+                    setFreqDraft(data.frequency);
+                    setFreqText(String(data.frequency));
+                    setVolumeDraft(data.volume);
+                    setPlungerDraft(data.plunger_pos);
+                }
+            },
+            onError: (error) => {
+                /*
+                 * fetchEventSource reintenta solo, y llama a onError tambien
+                 * cuando la conexion se aborta a proposito: al desmontar, y en
+                 * desarrollo en cada montaje doble de StrictMode. Avisar en el
+                 * acto producia el falso "se perdio la conexion" con el flujo
+                 * perfectamente vivo. Solo se avisa si sigue caida un rato.
+                 */
+                if (error instanceof DOMException && error.name === "AbortError") return;
+                setLinkUp(false);
+                if (dropTimerRef.current === null) {
+                    dropTimerRef.current = window.setTimeout(() => {
+                        dropTimerRef.current = null;
+                        warnedRef.current = true;
+                        showSnackBar({ severity: "error", message: "Se perdió la conexión con el experimento." });
+                    }, LINK_GRACE_MS);
+                }
+            },
         });
-        return closeSSE;
+        return () => {
+            if (dropTimerRef.current) window.clearTimeout(dropTimerRef.current);
+            dropTimerRef.current = null;
+            closeSSE();
+        };
     }, []);
 
     /* Reconstructed audio. The microphone sends scalars, never waveforms, so
@@ -193,7 +342,16 @@ export default function Kundt() {
     useEffect(() => {
         if (!listening) return;
 
-        const context = new AudioContext();
+        /*
+         * El contexto ya viene creado y reanudado desde el manejador del clic
+         * (toggleListening). Crearlo aqui lo dejaria en estado "suspended": los
+         * navegadores solo permiten arrancar audio dentro de la pila de llamadas
+         * de un gesto del usuario, y el efecto de React corre despues. Sin eso
+         * oscillator.start() no falla ni avisa, simplemente no suena.
+         */
+        const context = audioContextRef.current;
+        if (!context) return;
+
         const oscillator = context.createOscillator();
         const gain = context.createGain();
 
@@ -204,17 +362,23 @@ export default function Kundt() {
         gain.connect(context.destination);
         oscillator.start();
 
-        audioContextRef.current = context;
         oscillatorRef.current = oscillator;
         gainRef.current = gain;
 
-        /* Full scale would be painfully loud; this keeps a resonance peak near
-         * a comfortable level while silence stays silent. */
+        /*
+         * La ganancia sigue la AMPLITUD contra el fondo de escala del ADC, no el
+         * cociente amp/rms. El cociente mide que fraccion del nivel es el tono,
+         * y se mantiene casi constante al atravesar una resonancia: usarlo aqui
+         * hacia que el tubo sonara igual en un nodo que en un vientre, que es
+         * exactamente lo que esta funcion existe para dejar oir.
+         *
+         * La raiz cuadrada comprime el recorrido: entre valle y pico se han
+         * medido factores de x12, y en escala lineal el valle quedaria inaudible.
+         * El 0,25 final evita que una resonancia resulte molesta.
+         */
         const interval = window.setInterval(() => {
-            const current = sensorsRef.current;
-            const level = current.mic_amplitude ?? 0;
-            const reference = current.mic_rms && current.mic_rms > 0 ? current.mic_rms : 1;
-            const normalised = Math.min(1, level / Math.max(reference, 1));
+            const level = sensorsRef.current.mic_amplitude ?? 0;
+            const normalised = Math.min(1, Math.sqrt(Math.max(level, 0) / PEAK_FULL_SCALE));
             gain.gain.linearRampToValueAtTime(normalised * 0.25, context.currentTime + 0.15);
         }, 120);
 
@@ -223,8 +387,9 @@ export default function Kundt() {
             try { oscillator.stop(); } catch { /* already stopped */ }
             oscillator.disconnect();
             gain.disconnect();
-            context.close();
-            audioContextRef.current = null;
+            /* No se cierra el contexto: close() es irreversible y volver a
+             * escuchar exigiria otro gesto del usuario. Se deja vivo y en
+             * silencio para que el siguiente "Escuchar" sea inmediato. */
             oscillatorRef.current = null;
             gainRef.current = null;
         };
@@ -238,6 +403,34 @@ export default function Kundt() {
         }
     }, [frequency]);
 
+    /*
+     * Crear y reanudar el contexto DENTRO del clic. Es el unico momento en que
+     * el navegador lo permite. Si aun asi no queda en "running", se avisa: un
+     * audio bloqueado que no dice nada es indistinguible de uno averiado.
+     */
+    const toggleListening = async () => {
+        if (listening) {
+            setListening(false);
+            return;
+        }
+        try {
+            const context = audioContextRef.current ?? new AudioContext();
+            audioContextRef.current = context;
+            if (context.state === "suspended") await context.resume();
+            if (context.state !== "running") {
+                showSnackBar({
+                    severity: "warning",
+                    message: "El navegador bloqueó el audio. Permite el sonido para este sitio y vuelve a intentarlo.",
+                });
+                return;
+            }
+            setListening(true);
+        }
+        catch {
+            showSnackBar({ severity: "error", message: "Este navegador no permite Web Audio." });
+        }
+    };
+
     const send = async (body: Parameters<typeof updateKundt>[1], message?: string) => {
         try {
             await updateKundt(platform_id, body);
@@ -248,59 +441,85 @@ export default function Kundt() {
         }
     };
 
-    const commitFrequency = () => {
-        const parsed = Number(frequencyInput);
-        if (!Number.isFinite(parsed)) {
+    const commitFrequency = (hz: number) => {
+        setFrequency(hz);
+        setFreqDraft(hz);
+        setFreqText(String(hz));
+        send({ frequency: hz });
+    };
+
+    /*
+     * Consigna escrita a mano. Se acota al rango del firmware en vez de
+     * rechazarla: E2 ya acota igual (hallazgo A4), asi que rechazar aqui solo
+     * añadiria un aviso que el hardware no respeta.
+     */
+    const commitFrequencyText = () => {
+        const parsed = Number(freqText);
+        if (!Number.isFinite(parsed) || freqText.trim() === "") {
+            setFreqText(String(freqDraft));
             showSnackBar({ severity: "warning", message: "La frecuencia debe ser un número." });
             return;
         }
-        if (parsed < FREQ_MIN_HZ || parsed > FREQ_MAX_HZ) {
+        const clamped = Math.round(Math.min(FREQ_MAX_HZ, Math.max(FREQ_MIN_HZ, parsed)));
+        if (clamped !== parsed) {
             showSnackBar({
-                severity: "warning",
-                message: `La frecuencia debe estar entre ${FREQ_MIN_HZ} y ${FREQ_MAX_HZ} Hz.`,
+                severity: "info",
+                message: `Fuera de rango: ajustada a ${clamped} Hz (${FREQ_MIN_HZ}-${FREQ_MAX_HZ} Hz).`,
             });
-            return;
         }
-        setFrequency(parsed);
-        send({ frequency: parsed });
+        commitFrequency(clamped);
     };
 
     const commitVolume = (value: number) => {
-        setVolume(value);
+        setVolumeDraft(value);
         send({ volume: value });
     };
 
-    const commitPlunger = () => {
-        const parsed = Number(plungerTarget);
-        if (!Number.isFinite(parsed)) {
-            showSnackBar({ severity: "warning", message: "La posición debe ser un número." });
-            return;
-        }
-        send({ plunger_pos: parsed }, `Émbolo enviado a ${parsed} cm.`);
+    const commitPlunger = (cm: number) => {
+        send({ plunger_pos: cm }, `Émbolo enviado a ${cm} cm.`);
     };
 
     const calibrate = () => {
         send({ calibrate: true }, "Calibración solicitada: el émbolo buscará el fin de carrera.");
     };
 
-    const chartData = [{
+    /* Edad del ultimo dato. lastUpdate en 0 significa que aun no ha llegado
+     * ninguno: lo que se ve es lo que trajo el cargador al abrir la pagina. */
+    const dataAgeMs = lastUpdate === 0 ? Infinity : now - lastUpdate;
+    const fresh = linkUp && dataAgeMs < STALE_MS;
+    const ageLabel = lastUpdate === 0
+        ? "sin datos en vivo"
+        : dataAgeMs < 2000 ? "en vivo" : `hace ${Math.round(dataAgeMs / 1000)} s`;
+
+    const chartData = useMemo(() => [{
         id: "Amplitud",
         data: [...samples]
             .sort((a, b) => a.position - b.position)
             .map((s) => ({ x: s.position, y: Math.round(s.amplitude) })),
-    }];
+    }], [samples]);
 
-    const resonanceRows = resonances.map((position, index) => ({
+    const resonanceRows = useMemo(() => resonances.map((position, index) => ({
         id: index,
         orden: index + 1,
         posicion: position.toFixed(1),
         separacion: index === 0 ? "—" : (position - resonances[index - 1]).toFixed(1),
-    }));
+    })), [resonances]);
 
     return (
         <Stack spacing={2.5} sx={{ padding: 2 }}>
 
-            <CamerasDisplay camera_list={cameras} />
+            {/* Estado del enlace. Sin esto, un flujo caido y uno vivo con el
+                embolo quieto se ven exactamente igual. */}
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+                <Chip
+                    size="small"
+                    color={fresh ? "success" : linkUp ? "warning" : "error"}
+                    variant={fresh ? "filled" : "outlined"}
+                    label={linkUp ? `Datos: ${ageLabel}` : "Sin conexión con el experimento"}
+                />
+            </Stack>
+
+            <CamerasDisplay camera_list={cameras} flipped_cameras={FLIPPED_CAMERAS} />
 
             <Grid container spacing={2.5}>
 
@@ -311,25 +530,52 @@ export default function Kundt() {
                             <CardTitle label="Generador de audio" icon={<GraphicEqIcon />} />
 
                             <Stack spacing={2} sx={{ marginTop: 2 }}>
-                                <Stack direction="row" spacing={1} alignItems="center">
-                                    <TextField
-                                        label="Frecuencia [Hz]"
-                                        value={frequencyInput}
-                                        onChange={(e) => setFrequencyInput(e.target.value)}
-                                        onKeyDown={(e) => { if (e.key === "Enter") commitFrequency(); }}
-                                        size="small"
-                                        type="number"
-                                        inputProps={{ min: FREQ_MIN_HZ, max: FREQ_MAX_HZ }}
-                                    />
-                                    <ButtonCB variant="contained" onClick={commitFrequency}>Aplicar</ButtonCB>
-                                </Stack>
+                                <Box>
+                                    <Typography variant="body2" sx={{ marginBottom: 1 }}>
+                                        Frecuencia
+                                    </Typography>
+                                    {/* Las etiquetas de marks van en posicion absoluta y sobresalen por
+                                        debajo de la caja del Slider: sin este hueco caen encima del
+                                        texto de ayuda que viene despues. */}
+                                    <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 3 }}>
+                                        <GraphicEqIcon fontSize="small" color="action" />
+                                        <TextField
+                                            value={freqText}
+                                            onChange={(e) => setFreqText(e.target.value)}
+                                            onKeyDown={(e) => { if (e.key === "Enter") commitFrequencyText(); }}
+                                            onBlur={commitFrequencyText}
+                                            size="small"
+                                            type="number"
+                                            sx={{ width: 130, flexShrink: 0 }}
+                                            slotProps={{
+                                                input: { endAdornment: <InputAdornment position="end">Hz</InputAdornment> },
+                                                htmlInput: { min: FREQ_MIN_HZ, max: FREQ_MAX_HZ, step: 1, "aria-label": "Frecuencia en hercios" },
+                                            }}
+                                        />
+                                        <Slider
+                                            value={freqToSlider(freqDraft)}
+                                            min={0}
+                                            max={100}
+                                            step={0.05}
+                                            marks={FREQ_MARKS}
+                                            valueLabelDisplay="auto"
+                                            valueLabelFormat={() => `${freqDraft} Hz`}
+                                            onChange={(_, v) => { draggingRef.current = true; const hz = sliderToFreq(v as number); setFreqDraft(hz); setFreqText(String(hz)); }}
+                                            onChangeCommitted={(_, v) => { draggingRef.current = false; commitFrequency(sliderToFreq(v as number)); }}
+                                        />
+                                    </Stack>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Escala logarítmica de {FREQ_MIN_HZ} Hz a {FREQ_MAX_HZ / 1000} kHz.
+                                        La caja y la barra están sincronizadas; la caja aplica con Enter o al salir.
+                                    </Typography>
+                                </Box>
 
                                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                     {[350, 500, 1000, 1500, 2000].map((preset) => (
                                         <Chip
                                             key={preset}
                                             label={`${preset} Hz`}
-                                            onClick={() => { setFrequencyInput(String(preset)); setFrequency(preset); send({ frequency: preset }); }}
+                                            onClick={() => commitFrequency(preset)}
                                             color={frequency === preset ? "primary" : "default"}
                                             variant={frequency === preset ? "filled" : "outlined"}
                                         />
@@ -338,14 +584,24 @@ export default function Kundt() {
 
                                 <Box>
                                     <Typography variant="body2" sx={{ marginBottom: 1 }}>
-                                        Volumen: <b>{volume}°</b> de {SERVO_MAX_DEG}°
+                                        Volumen: <b>{volumeDraft}°</b> de {SERVO_MAX_DEG}°
                                     </Typography>
-                                    <SliderComponent
-                                        value={volume}
-                                        setValue={commitVolume}
-                                        Icon={VolumeUpIcon}
-                                        Marks={VOLUME_MARKS}
-                                    />
+                                    {/* Las etiquetas de marks van en posicion absoluta y sobresalen por
+                                        debajo de la caja del Slider: sin este hueco caen encima del
+                                        texto de ayuda que viene despues. */}
+                                    <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 3 }}>
+                                        <VolumeUpIcon fontSize="small" color="action" />
+                                        <Slider
+                                            value={volumeDraft}
+                                            min={0}
+                                            max={SERVO_MAX_DEG}
+                                            step={1}
+                                            marks={VOLUME_MARKS}
+                                            valueLabelDisplay="auto"
+                                            onChange={(_, v) => { draggingRef.current = true; setVolumeDraft(v as number); }}
+                                            onChangeCommitted={(_, v) => { draggingRef.current = false; commitVolume(v as number); }}
+                                        />
+                                    </Stack>
                                     <Typography variant="caption" color="text.secondary">
                                         Es el ángulo del servo que gira el potenciómetro, no un porcentaje.
                                     </Typography>
@@ -366,17 +622,32 @@ export default function Kundt() {
                                     {sensors.plunger_actual !== undefined ? `${sensors.plunger_actual.toFixed(2)} cm` : "sin dato"}
                                 </Typography>
 
-                                <Stack direction="row" spacing={1} alignItems="center">
-                                    <TextField
-                                        label="Ir a [cm]"
-                                        value={plungerTarget}
-                                        onChange={(e) => setPlungerTarget(e.target.value)}
-                                        onKeyDown={(e) => { if (e.key === "Enter") commitPlunger(); }}
-                                        size="small"
-                                        type="number"
-                                    />
-                                    <ButtonCB variant="contained" onClick={commitPlunger}>Mover</ButtonCB>
-                                </Stack>
+                                <Box>
+                                    <Typography variant="body2" sx={{ marginBottom: 1 }}>
+                                        Ir a: <b>{plungerDraft.toFixed(1)} cm</b>
+                                    </Typography>
+                                    {/* Las etiquetas de marks van en posicion absoluta y sobresalen por
+                                        debajo de la caja del Slider: sin este hueco caen encima del
+                                        texto de ayuda que viene despues. */}
+                                    <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 3 }}>
+                                        <StraightenIcon fontSize="small" color="action" />
+                                        <Slider
+                                            value={toSliderCm(plungerDraft)}
+                                            min={toSliderCm(PLUNGER_MAX_CM)}
+                                            max={toSliderCm(PLUNGER_MIN_CM)}
+                                            step={0.5}
+                                            marks={PLUNGER_MARKS}
+                                            valueLabelDisplay="auto"
+                                            valueLabelFormat={(v) => `${fromSliderCm(v)} cm`}
+                                            onChange={(_, v) => { draggingRef.current = true; setPlungerDraft(fromSliderCm(v as number)); }}
+                                            onChangeCommitted={(_, v) => { draggingRef.current = false; commitPlunger(fromSliderCm(v as number)); }}
+                                        />
+                                    </Stack>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Recorrido útil del riel: {PLUNGER_MIN_CM} a {PLUNGER_MAX_CM} cm desde el parlante.
+                                        La barra va invertida a propósito: se mueve en el mismo sentido que el émbolo.
+                                    </Typography>
+                                </Box>
 
                                 <Stack direction="row" spacing={1}>
                                     <Chip
@@ -468,7 +739,7 @@ export default function Kundt() {
                                     variant="contained"
                                     color={listening ? "error" : "primary"}
                                     startIcon={listening ? <StopIcon /> : <PlayArrowIcon />}
-                                    onClick={() => setListening((v) => !v)}
+                                    onClick={toggleListening}
                                 >
                                     {listening ? "Detener" : "Escuchar el tubo"}
                                 </ButtonCB>

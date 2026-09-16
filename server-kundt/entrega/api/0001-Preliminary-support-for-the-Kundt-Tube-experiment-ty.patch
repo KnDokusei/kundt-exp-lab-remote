@@ -1,0 +1,426 @@
+From 6146edbd8ac30daabbadcf8138e8ea1a41f49495 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Wed, 16 Sep 2026 15:59:42 -0300
+Subject: [PATCH 1/3] Preliminary support for the `Kundt Tube` experiment type.
+
+Same eight-file shape as `Electron Diffraction` (4a27491): migration, Prisma
+model, DTO, channel, @EventPattern, handler, service read/write and the
+GET/POST/@Sse endpoints.
+
+Three things are specific to this experiment:
+
+The tube has three independent ESP32 modules (audio generation, microphone,
+motorised plunger) that share platform_id and controller_id and are told apart
+by which fields they publish. One logical controller keeps the experiment state
+in a single row.
+
+Every DTO field is optional and the handler merges instead of replacing, since
+writing `undefined` into a Prisma update leaves the column untouched. Without
+this the microphone module blanks out whatever the plunger module just
+reported. Verified against three real boards.
+
+Routes use :id rather than :platform_id, because ValidReservationGuard reads
+request.params.id and any route declaring :platform_id is rejected with 403.
+---
+ prisma/migrations/4_kundt/migration.sql       |  18 +++
+ prisma/schema/experiment.prisma               |  17 +++
+ src/dto/kundt.dto.ts                          | 106 ++++++++++++++++++
+ src/exp/exp.controller.ts                     |  28 +++++
+ src/exp/exp.service.ts                        |  63 ++++++++++-
+ src/mqtt-listener/mqtt-listener.controller.ts |  12 +-
+ src/mqtt-listener/mqtt-listener.service.ts    |  40 +++++++
+ src/mqtt/channels.ts                          |   1 +
+ 8 files changed, 283 insertions(+), 2 deletions(-)
+ create mode 100644 prisma/migrations/4_kundt/migration.sql
+ create mode 100644 src/dto/kundt.dto.ts
+
+diff --git a/prisma/migrations/4_kundt/migration.sql b/prisma/migrations/4_kundt/migration.sql
+new file mode 100644
+index 0000000..4fd959f
+--- /dev/null
++++ b/prisma/migrations/4_kundt/migration.sql
+@@ -0,0 +1,18 @@
++-- CreateTable
++CREATE TABLE "remote-experiments"."Kundt" (
++    "id" INTEGER NOT NULL,
++    "frequency" INTEGER NOT NULL DEFAULT 0,
++    "volume" INTEGER NOT NULL DEFAULT 0,
++    "plunger_pos" DOUBLE PRECISION NOT NULL DEFAULT 0,
++    "plunger_actual" DOUBLE PRECISION NOT NULL DEFAULT 0,
++    "clockwise_limit" BOOLEAN NOT NULL DEFAULT false,
++    "counter_limit" BOOLEAN NOT NULL DEFAULT false,
++    "mic_amplitude" DOUBLE PRECISION NOT NULL DEFAULT 0,
++    "mic_rms" DOUBLE PRECISION NOT NULL DEFAULT 0,
++    "mic_peak" INTEGER NOT NULL DEFAULT 0,
++
++    CONSTRAINT "Kundt_pkey" PRIMARY KEY ("id")
++);
++
++-- AddForeignKey
++ALTER TABLE "remote-experiments"."Kundt" ADD CONSTRAINT "Kundt_id_fkey" FOREIGN KEY ("id") REFERENCES "remote-experiments"."ExpBase"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+diff --git a/prisma/schema/experiment.prisma b/prisma/schema/experiment.prisma
+index 04c5b11..d2cbe96 100644
+--- a/prisma/schema/experiment.prisma
++++ b/prisma/schema/experiment.prisma
+@@ -7,6 +7,7 @@ model ExpBase {
+   pendulum             Pendulum?
+   tank                 Tank?
+   electron_diffraction ElectronDiffraction?
++  kundt                Kundt?
+ 
+   @@schema("remote-experiments")
+ }
+@@ -69,3 +70,19 @@ model ElectronDiffraction {
+ 
+   @@schema("remote-experiments")
+ }
++
++model Kundt {
++  exp_base        ExpBase @relation(fields: [id], references: [id])
++  id              Int     @id
++  frequency       Int     @default(0)
++  volume          Int     @default(0)
++  plunger_pos     Float   @default(0)
++  plunger_actual  Float   @default(0)
++  clockwise_limit Boolean @default(false)
++  counter_limit   Boolean @default(false)
++  mic_amplitude   Float   @default(0)
++  mic_rms         Float   @default(0)
++  mic_peak        Int     @default(0)
++
++  @@schema("remote-experiments")
++}
+diff --git a/src/dto/kundt.dto.ts b/src/dto/kundt.dto.ts
+new file mode 100644
+index 0000000..5e4a03f
+--- /dev/null
++++ b/src/dto/kundt.dto.ts
+@@ -0,0 +1,106 @@
++import { IsBoolean, IsNotEmpty, IsNumber, IsObject, IsOptional } from "class-validator";
++import { DeviceMQTT } from "./exp_base";
++
++/*
++ * Kundt tube. Unlike the other experiments, this one is driven by three
++ * independent ESP32 modules that never talk to each other:
++ *
++ *   E1-Mic       -> mic_rms, mic_peak
++ *   E2-SineGen   -> frequency, volume
++ *   E3-StepMotor -> plunger_pos, plunger_actual, clockwise_limit, counter_limit
++ *
++ * They all publish to the same topic and each one sends only its own fields,
++ * so every member below is optional and the listener merges what it receives.
++ * This is the reason the `Sensors` class is not `@IsNotEmpty()` like the ones
++ * belonging to single-controller experiments.
++ */
++
++export class KundtActuators {
++    // E2-SineGen: AD9833 output frequency, in Hz
++    @IsOptional()
++    @IsNumber()
++    frequency: number;
++
++    // E2-SineGen: servo angle driving the volume potentiometer, in degrees.
++    // Not a percentage, despite the name used by the original firmware.
++    @IsOptional()
++    @IsNumber()
++    volume: number;
++
++    // E3-StepMotor: requested plunger position, in cm from the speaker end
++    @IsOptional()
++    @IsNumber()
++    plunger_pos: number;
++}
++
++export class KundtSensors {
++    // E1-Mic: Goertzel magnitude at the frequency E2 is driving. This is the
++    // measurement: a single DFT bin rejects the stepper, the fans and the
++    // supply ripple that broadband RMS would fold into the reading.
++    @IsOptional()
++    @IsNumber()
++    mic_amplitude: number;
++
++    // E1-Mic: broadband RMS of the last window. Diagnostic only: comparing it
++    // against mic_amplitude tells how much of the level is actually the tone.
++    @IsOptional()
++    @IsNumber()
++    mic_rms: number;
++
++    // E1-Mic: peak sample of the last window. Saturation detector: a value
++    // pinned at full scale means the front end is clipping.
++    @IsOptional()
++    @IsNumber()
++    mic_peak: number;
++
++    // E3-StepMotor: position actually reached, in cm
++    @IsOptional()
++    @IsNumber()
++    plunger_actual: number;
++
++    @IsOptional()
++    @IsBoolean()
++    clockwise_limit: boolean;
++
++    @IsOptional()
++    @IsBoolean()
++    counter_limit: boolean;
++}
++
++export class KundtRow {
++    id: number;
++    frequency: number;
++    volume: number;
++    plunger_pos: number;
++    plunger_actual: number;
++    clockwise_limit: boolean;
++    counter_limit: boolean;
++    mic_amplitude: number;
++    mic_rms: number;
++    mic_peak: number;
++}
++
++export class KundtInfo {
++    // Usable rail travel, in cm. Reported by E3 after homing.
++    @IsNumber()
++    @IsNotEmpty()
++    limit_2_limit: number;
++}
++
++export class KundtMQTT {
++    @IsObject()
++    @IsNotEmpty()
++    device: DeviceMQTT;
++
++    @IsOptional()
++    @IsObject()
++    actuators: KundtActuators;
++
++    @IsOptional()
++    @IsObject()
++    sensors: KundtSensors;
++
++    @IsOptional()
++    @IsObject()
++    info: KundtInfo;
++}
+diff --git a/src/exp/exp.controller.ts b/src/exp/exp.controller.ts
+index a6b61ca..8487cac 100644
+--- a/src/exp/exp.controller.ts
++++ b/src/exp/exp.controller.ts
+@@ -7,6 +7,7 @@ import { TankActuators, TankCamera } from "src/dto/tank.dto";
+ import { ValidReservationGuard } from "src/reservations/reservations.guard";
+ import { PendulumActuators } from "src/dto/pendulum.dto";
+ import { ElectronDiffractionActuators, ElectronDiffractionCamera } from "src/dto/electron_diffraction.dto";
++import { KundtActuators } from "src/dto/kundt.dto";
+ 
+ @UseGuards(JwtGuard)
+ @Controller('exp')
+@@ -121,4 +122,31 @@ export class ExpController {
+         return fromEvent(this.eventEmitter, 'electron-diffraction-update').pipe(map(sensors => ({data:sensors as object})));
+     }
+ 
++
++    // Kundt tube
++
++    /*
++     * The route parameter is named `id`, matching tank and NOT electron
++     * diffraction. ValidReservationGuard reads `request.params.id`, so a route
++     * declaring `:platform_id` leaves it undefined, the guard looks up a
++     * reservation for NaN and every POST comes back 403. Electron diffraction
++     * has that bug today; this avoids inheriting it.
++     */
++    @Get('kundt-get/:id')
++    getKundt(@Param('id', ParseIntPipe) platform_id: number)
++    {
++        return this.expService.getKundtExp(platform_id);
++    }
++
++    @UseGuards(ValidReservationGuard)
++    @Post('kundt-set/:id')
++    updateKundt(@Param('id', ParseIntPipe) platform_id: number, @Body() actuators: KundtActuators){
++        return this.expService.setKundtExp(platform_id, actuators);
++    }
++
++    @Sse('kundt-updates')
++    kundtAlerts(): Observable<MessageEvent>{
++        return fromEvent(this.eventEmitter, 'kundt-update').pipe(map(sensors => ({data:sensors as object})));
++    }
++
+ }
+diff --git a/src/exp/exp.service.ts b/src/exp/exp.service.ts
+index e17ac5c..8211192 100644
+--- a/src/exp/exp.service.ts
++++ b/src/exp/exp.service.ts
+@@ -1,8 +1,9 @@
+ import { Injectable, NotFoundException, InternalServerErrorException } from "@nestjs/common";
+ import { ElectronDiffractionActuators, ElectronDiffractionCamera, ElectronDiffractionRow } from "src/dto/electron_diffraction.dto";
++import { KundtActuators, KundtRow } from "src/dto/kundt.dto";
+ import { PendulumActuators, PendulumRow } from "src/dto/pendulum.dto";
+ import { TankRow, TankActuators, TankCamera } from "src/dto/tank.dto";
+-import { ELECTRON_DIFFRACTION_TOPIC, PENDULUM_TOPIC, TANK_TOPIC } from "src/mqtt/channels";
++import { ELECTRON_DIFFRACTION_TOPIC, KUNDT_TOPIC, PENDULUM_TOPIC, TANK_TOPIC } from "src/mqtt/channels";
+ import { MqttService } from "src/mqtt/mqtt.service";
+ import { PrismaService } from "src/prisma/prisma.service";
+ 
+@@ -378,4 +379,64 @@ export class ExpService {
+         return { camera_position: entry.stepper_pos };
+ 
+     }
++
++
++    // Kundt tube
++
++    kundtEntry2Actuators(entry: KundtRow) {
++        let actuators: Object = {
++            frequency: entry.frequency,
++            volume: entry.volume,
++            plunger_pos: entry.plunger_pos,
++        }
++        return actuators;
++    }
++
++
++    async getKundtExp(id: number) {
++        // The three modules share a single ExpBase, so index 0 is the only one
++        const row = await this.getExpBaseByIndex(id, 0);
++
++        const exp_entry = await this.prisma.kundt.findUnique({
++            where: {
++                id: row.id
++            }
++        });
++
++        if (exp_entry === null) {
++            throw new NotFoundException(
++                `No se encontró el experimento con ID ${row.id}`
++            );
++        }
++
++        return exp_entry;
++    }
++
++
++    async setKundtExp(platform_id: number, actuators: KundtActuators) {
++
++        const entry = await this.getKundtExp(platform_id);
++
++        const updated_entry = await this.prisma.kundt.update({
++            where: {
++                id: entry.id,
++            },
++            data:
++            {
++                frequency: actuators.frequency,
++                volume: actuators.volume,
++                plunger_pos: actuators.plunger_pos,
++            }
++        });
++
++        const as_object = this.kundtEntry2Actuators(updated_entry);
++        const computed_body = {
++            id: entry.id,
++            actuators: as_object
++        };
++
++        await this.mqttService.publishUpdate(KUNDT_TOPIC, platform_id, entry.id, computed_body);
++
++        return computed_body;
++    }
+ }
+diff --git a/src/mqtt-listener/mqtt-listener.controller.ts b/src/mqtt-listener/mqtt-listener.controller.ts
+index 0767de5..5b2ae97 100644
+--- a/src/mqtt-listener/mqtt-listener.controller.ts
++++ b/src/mqtt-listener/mqtt-listener.controller.ts
+@@ -1,10 +1,11 @@
+ import { Controller } from '@nestjs/common';
+ import { EventPattern, Payload } from '@nestjs/microservices';
+ import { MqttListenerService } from './mqtt-listener.service';
+-import { ELECTRON_DIFFRACTION_TOPIC, PENDULUM_TOPIC, TANK_TOPIC, UPDATE_CHANNEL } from 'src/mqtt/channels';
++import { ELECTRON_DIFFRACTION_TOPIC, KUNDT_TOPIC, PENDULUM_TOPIC, TANK_TOPIC, UPDATE_CHANNEL } from 'src/mqtt/channels';
+ import { TankMQTT } from 'src/dto/tank.dto';
+ import { PendulumMQTT } from 'src/dto/pendulum.dto';
+ import { ElectronDiffractionMQTT } from 'src/dto/electron_diffraction.dto';
++import { KundtMQTT } from 'src/dto/kundt.dto';
+ 
+ @Controller('mqtt-listener')
+ export class MqttListenerController {
+@@ -32,4 +33,13 @@ export class MqttListenerController {
+         console.log(payload);
+         await this.mqttListener.updateElectronDiffractionStatus(payload);
+     }
++
++    // Kundt tube update. Shared by E1-Mic, E2-SineGen and E3-StepMotor:
++    // each module publishes only the fields it owns.
++    @EventPattern(UPDATE_CHANNEL + "/" + KUNDT_TOPIC + "/+/+")
++    async handleKundtMQTT(@Payload() payload: KundtMQTT)
++    {
++        console.log(payload);
++        await this.mqttListener.updateKundtStatus(payload);
++    }
+ }
+diff --git a/src/mqtt-listener/mqtt-listener.service.ts b/src/mqtt-listener/mqtt-listener.service.ts
+index 40dd322..d80c991 100644
+--- a/src/mqtt-listener/mqtt-listener.service.ts
++++ b/src/mqtt-listener/mqtt-listener.service.ts
+@@ -1,6 +1,7 @@
+ import { Injectable } from '@nestjs/common';
+ import { EventEmitter2 } from '@nestjs/event-emitter';
+ import { ElectronDiffractionMQTT } from 'src/dto/electron_diffraction.dto';
++import { KundtMQTT } from 'src/dto/kundt.dto';
+ import { PendulumMQTT } from 'src/dto/pendulum.dto';
+ import { TankMQTT } from 'src/dto/tank.dto';
+ import { ExpService } from 'src/exp/exp.service';
+@@ -103,6 +104,45 @@ export class MqttListenerService {
+         this.eventEmitter.emit('electron-diffraction-update', payload);
+     }
+ 
++    /*
++     * Kundt tube. Three independent modules publish to the same topic, each one
++     * sending only the fields it owns, so this merges instead of replacing:
++     * writing `undefined` into a Prisma `update` leaves the column untouched,
++     * which is exactly the behaviour needed here. Spreading the whole payload
++     * would let E1 blank out the values E3 just reported.
++     */
++    async updateKundtStatus(payload: KundtMQTT)
++    {
++        //TODO: Assert/Exception managment
++        let controller_id = payload.device.id;
++        const exp_entry = await this.prisma.expBase.findUnique({
++            where: {
++                controller_id: controller_id
++            }
++        });
++
++        const updated_entry = await this.prisma.kundt.update({
++            where: {
++                id: exp_entry!.id
++            },
++            data: {
++                frequency:       payload.actuators?.frequency,
++                volume:          payload.actuators?.volume,
++                plunger_pos:     payload.actuators?.plunger_pos,
++                mic_amplitude:   payload.sensors?.mic_amplitude,
++                mic_rms:         payload.sensors?.mic_rms,
++                mic_peak:        payload.sensors?.mic_peak,
++                plunger_actual:  payload.sensors?.plunger_actual,
++                clockwise_limit: payload.sensors?.clockwise_limit,
++                counter_limit:   payload.sensors?.counter_limit,
++            }
++        })
++
++        console.log("[Kundt] UPDATED_ENTRY: ", updated_entry);
++
++        this.eventEmitter.emit('kundt-update', updated_entry);
++    }
++
+ 
+     // async updateDevicetatus(payload: ListenerDTO) {
+     //     // Check the type of experiment
+diff --git a/src/mqtt/channels.ts b/src/mqtt/channels.ts
+index 2b87a9c..08c8d88 100644
+--- a/src/mqtt/channels.ts
++++ b/src/mqtt/channels.ts
+@@ -3,3 +3,4 @@ export const UPDATE_CHANNEL = "dev-status";
+ export const TANK_TOPIC = "tank";
+ export const PENDULUM_TOPIC = "pendulum";
+ export const ELECTRON_DIFFRACTION_TOPIC = "electron-diffraction"
++export const KUNDT_TOPIC = "kundt"
