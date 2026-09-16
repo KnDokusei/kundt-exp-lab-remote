@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES kundt_config kundt_wifi kundt_mqtt kundt_led stepper nvs_flash
+    REQUIRES kundt_config kundt_wifi kundt_mqtt kundt_ota kundt_led stepper nvs_flash
 )
 
 # Treat warnings as errors in our own code (not in IDF/managed components).

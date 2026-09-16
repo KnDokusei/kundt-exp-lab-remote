@@ -22,7 +22,12 @@
  *   MOVIENDO    -> IDLE         llegó, o se cayó el WiFi
  *   MOVIENDO    -> BARRIDO_IZQ  tocó un switch con deriva > ERROR_MAX_CM
  *   búsquedas   -> FALLA        el motor paró sin tocar el switch buscado
+ *   IDLE        -> ACTUALIZANDO hay una imagen nueva esperando
  *   cualquiera  -> FALLA        ambos switches pulsados a la vez
+ *
+ * ACTUALIZANDO sólo se alcanza desde IDLE, nunca desde MOVIENDO: reiniciar con
+ * el motor en marcha dejaría el émbolo en una posición que nadie conoce, y al
+ * arrancar la nueva imagen volvería a barrer el riel para encontrarse.
  */
 
 #include <math.h>
@@ -36,6 +41,7 @@
 #include "kundt_config.h"
 #include "kundt_led.h"
 #include "kundt_mqtt.h"
+#include "kundt_ota.h"
 #include "kundt_wifi.h"
 #include "stepper.h"
 #include "stepper_math.h"
@@ -54,6 +60,7 @@ typedef enum {
     E3_REFERENCIA,
     E3_IDLE,
     E3_MOVIENDO,
+    E3_ACTUALIZANDO,
     E3_FALLA,
 } estado_t;
 
@@ -64,6 +71,7 @@ static const char *const NOMBRE[] = {
     [E3_REFERENCIA]  = "REFERENCIA",
     [E3_IDLE]        = "IDLE",
     [E3_MOVIENDO]    = "MOVIENDO",
+    [E3_ACTUALIZANDO] = "ACTUALIZANDO",
     [E3_FALLA]       = "FALLA",
 };
 
@@ -214,6 +222,8 @@ static void a_idle(void)
         ESP_ERROR_CHECK(kundt_config_broker_uri(broker, sizeof(broker)));
         ESP_ERROR_CHECK(kundt_mqtt_start(broker, s_cfg.platform_id, s_cfg.controller_id,
                                          on_actuators, NULL));
+        ESP_ERROR_CHECK(kundt_ota_start("e3", broker, s_cfg.platform_id));
+        kundt_ota_log();
         s_mqtt_arrancado = true;
     }
 
@@ -304,6 +314,12 @@ static void fsm_task(void *arg)
             break;
 
         case E3_IDLE:
+            kundt_ota_confirmar();  /* la imagen ha demostrado que conecta */
+            if (kundt_ota_pendiente()) {
+                stepper_stop();
+                cambiar(E3_ACTUALIZANDO);
+                break;
+            }
             /* Se publica en reposo, no sólo al moverse. Sin esto el servidor no
              * distingue un émbolo quieto y calibrado de una placa colgada: en
              * ambos casos ve silencio. Es además el único camino por el que sale
@@ -338,6 +354,13 @@ static void fsm_task(void *arg)
                            s_pedido - stepper_position(),
                            stepper_steps_to_cm(s_pedido - stepper_position(), pendiente()));
             a_idle();
+            break;
+
+        case E3_ACTUALIZANDO:
+            /* Bloquea mientras descarga. Si vuelve, es que falló y el émbolo
+             * sigue donde estaba, con el span de NVS intacto. */
+            kundt_ota_aplicar();
+            cambiar(E3_IDLE);
             break;
 
         case E3_FALLA:

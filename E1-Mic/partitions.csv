@@ -1,0 +1,15 @@
+# Tabla con dos particiones OTA para el tubo de Kundt.
+#
+# Se omite "factory" a propósito: con 4 MB de flash, repartir el espacio entre
+# dos particiones de 1,5 MB da 40% libre a binarios que hoy ocupan el 90% de una
+# de 1 MB. Reservar además una factory dejaría las tres demasiado justas.
+#
+# nvs se mantiene en 0x9000 con 24 KiB, igual que en la tabla anterior, para que
+# la provisión ya existente (tools/provision) siga valiendo sin cambios.
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x6000
+otadata,    data, ota,     0xf000,   0x2000
+phy_init,   data, phy,     0x11000,  0x1000
+ota_0,      app,  ota_0,   0x20000,  0x180000
+ota_1,      app,  ota_1,   0x1a0000, 0x180000

@@ -25,7 +25,11 @@
  *   MIDIENDO   -> SIN_DATOS    varias tramas seguidas sin muestras
  *   REAFINANDO -> MIDIENDO     coeficiente nuevo; la ventana a medias se pierde
  *   SIN_DATOS  -> MIDIENDO     volvió a llegar audio
+ *   MIDIENDO   -> ACTUALIZANDO hay una imagen nueva esperando
  *   cualquiera -> FALLA        el ADC devolvió un error que no es un vencimiento
+ *
+ * ACTUALIZANDO sólo se alcanza desde MIDIENDO y entre ventanas: una ventana a
+ * medias se pierde igual que al reafinar, y no hay nada físico en marcha.
  *
  * No hay estados de WiFi ni de broker, a diferencia de E3. Allí la caída del
  * enlace DEBE parar el motor, porque un motor moviéndose a ciegas es peligroso.
@@ -52,6 +56,7 @@
 #include "kundt_config.h"
 #include "kundt_led.h"
 #include "kundt_mqtt.h"
+#include "kundt_ota.h"
 #include "kundt_wifi.h"
 #include "mic_capture.h"
 #include "mic_dsp.h"
@@ -85,6 +90,7 @@ typedef enum {
     E1_MIDIENDO,
     E1_REAFINANDO,
     E1_SIN_DATOS,
+    E1_ACTUALIZANDO,
     E1_FALLA,
 } estado_t;
 
@@ -93,6 +99,7 @@ static const char *const NOMBRE[] = {
     [E1_MIDIENDO]   = "MIDIENDO",
     [E1_REAFINANDO] = "REAFINANDO",
     [E1_SIN_DATOS]  = "SIN_DATOS",
+    [E1_ACTUALIZANDO] = "ACTUALIZANDO",
     [E1_FALLA]      = "FALLA",
 };
 
@@ -186,6 +193,10 @@ static void acumular(size_t samples)
 
 static void proyectar_led(void)
 {
+    /* La imagen se confirma cuando ha demostrado que conecta, no con arrancar. */
+    if (kundt_wifi_is_connected() && kundt_mqtt_is_connected()) {
+        kundt_ota_confirmar();
+    }
     kundt_led_set_state(!kundt_wifi_is_connected() ? KUNDT_LED_NO_WIFI
                         : kundt_mqtt_is_connected() ? KUNDT_LED_RUNNING
                                                     : KUNDT_LED_NO_SERVER);
@@ -272,6 +283,10 @@ static void fsm_task(void *arg)
         }
 
         case E1_MIDIENDO:
+            if (kundt_ota_pendiente()) {
+                cambiar(E1_ACTUALIZANDO);
+                break;
+            }
             if (xQueueReceive(s_cola, &cmd, 0) == pdTRUE && cmd.frequency != s_tono_hz) {
                 cambiar(E1_REAFINANDO);
                 afinar(cmd.frequency);
@@ -310,6 +325,13 @@ static void fsm_task(void *arg)
                          (unsigned long)vacias);
             }
             vacias++;
+            break;
+
+        case E1_ACTUALIZANDO:
+            /* Bloquea mientras descarga. Si vuelve, es que falló y la medida
+             * continúa con el firmware actual. */
+            kundt_ota_aplicar();
+            cambiar(E1_MIDIENDO);
             break;
 
         case E1_FALLA:
@@ -374,6 +396,9 @@ void app_main(void)
     ESP_ERROR_CHECK(kundt_config_broker_uri(broker, sizeof(broker)));
     ESP_ERROR_CHECK(kundt_mqtt_start(broker, cfg.platform_id, cfg.controller_id,
                                      on_actuators, NULL));
+
+    ESP_ERROR_CHECK(kundt_ota_start("e1", broker, cfg.platform_id));
+    kundt_ota_log();
 
     debug_stream_start();
 

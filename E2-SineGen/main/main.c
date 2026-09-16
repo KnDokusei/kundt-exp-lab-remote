@@ -19,6 +19,11 @@
  *   IDLE       -> SIN_BROKER  se cayó MQTT; la consigna NO se toca
  *   IDLE       -> SIN_WIFI    se cayó el WiFi; la consigna NO se toca
  *   IDLE       -> FALLA       un driver devolvió error al actuar
+ *   IDLE       -> ACTUALIZANDO  hay una imagen nueva esperando
+ *
+ * ACTUALIZANDO sólo se alcanza desde IDLE: es donde se sabe que no hay una
+ * consigna a medio aplicar. Si la descarga falla se vuelve a IDLE con el
+ * firmware intacto; si sale bien, la placa reinicia.
  *
  * Que SIN_WIFI y SIN_BROKER no toquen la consigna es el hallazgo A4: en la
  * versión Arduino una respuesta mala se convertía en silencio en 0 Hz y 0
@@ -43,6 +48,7 @@
 #include "kundt_config.h"
 #include "kundt_led.h"
 #include "kundt_mqtt.h"
+#include "kundt_ota.h"
 #include "kundt_wifi.h"
 #include "servo.h"
 
@@ -72,6 +78,7 @@ typedef enum {
     E2_SIN_WIFI,
     E2_SIN_BROKER,
     E2_IDLE,
+    E2_ACTUALIZANDO,
     E2_FALLA,
 } estado_t;
 
@@ -80,6 +87,7 @@ static const char *const NOMBRE[] = {
     [E2_SIN_WIFI]   = "SIN_WIFI",
     [E2_SIN_BROKER] = "SIN_BROKER",
     [E2_IDLE]       = "IDLE",
+    [E2_ACTUALIZANDO] = "ACTUALIZANDO",
     [E2_FALLA]      = "FALLA",
 };
 
@@ -234,7 +242,12 @@ static void fsm_task(void *arg)
                 break;
             }
             kundt_led_set_state(KUNDT_LED_RUNNING);
+            kundt_ota_confirmar();  /* la imagen ha demostrado que conecta */
 
+            if (kundt_ota_pendiente()) {
+                cambiar(E2_ACTUALIZANDO);
+                break;
+            }
             if (hay && !aplicar(&cmd)) {
                 cambiar(E2_FALLA);
                 break;
@@ -247,6 +260,13 @@ static void fsm_task(void *arg)
                          (unsigned long)kundt_mqtt_published(),
                          s_freq_hz, servo_get_angle(), kundt_wifi_ip());
             }
+            break;
+
+        case E2_ACTUALIZANDO:
+            /* Bloquea mientras descarga. Si vuelve, es que falló y el firmware
+             * actual sigue en pie. */
+            kundt_ota_aplicar();
+            cambiar(E2_IDLE);
             break;
 
         case E2_FALLA:
@@ -315,6 +335,9 @@ void app_main(void)
     ESP_ERROR_CHECK(kundt_config_broker_uri(broker, sizeof(broker)));
     ESP_ERROR_CHECK(kundt_mqtt_start(broker, cfg.platform_id, cfg.controller_id,
                                      on_actuators, NULL));
+
+    ESP_ERROR_CHECK(kundt_ota_start("e2", broker, cfg.platform_id));
+    kundt_ota_log();
 
     kundt_led_set_state(KUNDT_LED_NO_WIFI);
     xTaskCreate(fsm_task, "e2_fsm", 4096, NULL, 5, NULL);

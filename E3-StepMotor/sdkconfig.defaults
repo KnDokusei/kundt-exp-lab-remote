@@ -7,3 +7,13 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # Los pasos se generan desde una alarma de GPTimer, así que gpio_set_level() y
 # gpio_get_level() se llaman en contexto de ISR: tienen que estar en IRAM.
 CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
+
+# Dos particiones OTA: ver partitions.csv. La tabla personalizada sustituye a la
+# de app único, que dejaba los binarios al 90% de ocupación.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Una imagen recién grabada arranca a prueba: si no se confirma, el siguiente
+# reinicio vuelve a la anterior. Es la red que evita dejar una placa inservible
+# dentro del montaje.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
