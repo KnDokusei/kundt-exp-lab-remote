@@ -13,6 +13,7 @@
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -119,9 +120,21 @@ esp_err_t kundt_ota_start(const char *modulo, const char *broker_uri,
      * cambio una avería del camino de actualización no puede dejar al módulo sin
      * recibir consignas, que es su función real.
      */
+    /*
+     * client_id propio y distinto del de kundt_mqtt. Los dos clientes viven en
+     * la misma placa; si comparten nombre el broker los expulsa alternadamente
+     * ("session taken over") y el módulo pierde consignas. Ver kundt_mqtt.c.
+     */
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char client_id[32];
+    snprintf(client_id, sizeof(client_id), "kundt-ota-%02x%02x%02x",
+             mac[3], mac[4], mac[5]);
+
     const esp_mqtt_client_config_t cfg = {
-        .broker.address.uri = broker_uri,
-        .session.keepalive  = 60,
+        .broker.address.uri    = broker_uri,
+        .credentials.client_id = client_id,
+        .session.keepalive     = 60,
     };
 
     s_cliente = esp_mqtt_client_init(&cfg);

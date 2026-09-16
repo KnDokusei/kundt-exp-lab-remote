@@ -8,6 +8,7 @@
 
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "mqtt_client.h"
 
 static const char *TAG = "kundt_mqtt";
@@ -150,8 +151,26 @@ esp_err_t kundt_mqtt_start(const char *broker_uri,
     snprintf(s_topic_sub, sizeof(s_topic_sub), "ctrl-channel/%s/%u/%u",
              KUNDT_MQTT_TOPIC, (unsigned)platform_id, (unsigned)controller_id);
 
+    /*
+     * client_id explícito, derivado del MAC.
+     *
+     * Sin él, esp-mqtt lo genera solo a partir del MAC y este cliente y el de
+     * kundt_ota acaban llamándose igual: el broker aplica "session taken over"
+     * y los dos se expulsan en bucle cada pocos segundos. Medido en placa.
+     *
+     * No vale derivarlo de platform_id/controller_id: E1, E2 y E3 los comparten
+     * a propósito (un solo controlador lógico), así que las tres placas del kit
+     * colisionarían entre sí.
+     */
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char client_id[32];
+    snprintf(client_id, sizeof(client_id), "kundt-%02x%02x%02x",
+             mac[3], mac[4], mac[5]);
+
     const esp_mqtt_client_config_t cfg = {
-        .broker.address.uri = broker_uri,
+        .broker.address.uri    = broker_uri,
+        .credentials.client_id = client_id,
         /* Sin sesión persistente: al reconectar se resuscribe explícitamente y
          * no interesa recibir un backlog de consignas viejas. */
         .session.disable_clean_session = false,
@@ -174,7 +193,7 @@ esp_err_t kundt_mqtt_start(const char *broker_uri,
         return err;
     }
 
-    ESP_LOGI(TAG, "cliente arrancado contra %s", broker_uri);
+    ESP_LOGI(TAG, "cliente \"%s\" arrancado contra %s", client_id, broker_uri);
     ESP_LOGI(TAG, "publica en %s", s_topic_pub);
     return ESP_OK;
 }
