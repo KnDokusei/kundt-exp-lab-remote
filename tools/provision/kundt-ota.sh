@@ -58,7 +58,17 @@ IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[\d.]+' | head -1)"
 # Se sirve un directorio temporal con sólo los binarios que toca publicar: así
 # el servidor efímero no expone el árbol entero del proyecto.
 SRV="$(mktemp -d /tmp/kundt-ota-XXXX)"
-trap 'rm -rf "$SRV"; [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null || true' EXIT
+# La limpieza va en una funcion: con set -e, la primera orden que falla dentro
+# de un trap aborta el resto, y en --dry-run (sin PID) eso se llevaba por
+# delante el borrado del directorio temporal.
+limpiar() {
+    if [[ -n "${PID:-}" ]]; then
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+    fi
+    rm -rf "$SRV" 2>/dev/null || true
+}
+trap limpiar EXIT
 
 for m in "${MODULOS[@]}"; do
   ORIGEN="$RAIZ/${DIR[$m]}/build/${BIN[$m]}"
@@ -76,7 +86,13 @@ if [[ "$SOLO_LISTAR" == "1" ]]; then
   exit 0
 fi
 
-( cd "$SRV" && python3 -m http.server "$PUERTO" --bind 0.0.0.0 >/dev/null 2>&1 ) &
+# Sin subshell: con "( ... ) &" el $! es el PID de la subshell, no el de python,
+# y el kill del trap dejaba el servidor huerfano sirviendo un directorio ya
+# borrado. El puerto quedaba ocupado y la siguiente actualizacion fallaba.
+# El registro de accesos se conserva: saber si la placa llego a pedir la imagen
+# es lo que distingue "no recibio la orden" de "la recibio y fallo al bajarla".
+ACCESOS="$SRV/.accesos.log"
+python3 -m http.server "$PUERTO" --bind 0.0.0.0 --directory "$SRV" > "$ACCESOS" 2>&1 &
 PID=$!
 sleep 1
 kill -0 "$PID" 2>/dev/null || { echo "no se pudo abrir el puerto $PUERTO" >&2; exit 1; }
@@ -95,3 +111,11 @@ echo
 echo "  El servidor sigue abierto 120 s para que las placas descarguen."
 echo "  Míralas con: docker exec $BROKER mosquitto_sub -h localhost -t 'dev-status/kundt/#' -v"
 sleep 120
+
+echo
+echo "  Peticiones recibidas:"
+if grep -q "GET" "$ACCESOS" 2>/dev/null; then
+    grep "GET" "$ACCESOS" | sed "s/^/    /"
+else
+    echo "    ninguna: las placas no llegaron a pedir la imagen"
+fi

@@ -17,3 +17,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # reinicio vuelve a la anterior. Es la red que evita dejar una placa inservible
 # dentro del montaje.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# esp_https_ota() rechaza las URL http:// salvo que esto este activado, y lo
+# hace antes de tocar la red: el modulo descarta la orden en silencio y sigue
+# como si nada. La imagen viaja por la LAN del laboratorio desde un servidor
+# efimero en el PC, sin certificado, asi que se permite HTTP plano.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
