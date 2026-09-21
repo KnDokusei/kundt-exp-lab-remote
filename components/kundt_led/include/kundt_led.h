@@ -17,12 +17,27 @@ extern "C" {
 
 #define KUNDT_LED_DEFAULT_GPIO 2
 
+/*
+ * Cada estado tiene su patrón de parpadeo, contable a simple vista. Ver la
+ * tabla PATRONES en kundt_led.c: la ranura son 100 ms y el ciclo 1,6 s.
+ *
+ *   ARRANQUE      parpadeo rápido continuo
+ *   SIN WIFI      2 destellos y pausa
+ *   SIN SERVIDOR  3 destellos y pausa
+ *   EN MARCHA     1 destello corto cada 1,6 s, como un latido
+ *   SIN DATOS     encendido largo y apagado largo
+ *   FALLO         encendido fijo
+ *   OCUPADO       parpadeo medio continuo, 200 ms
+ */
 typedef enum {
     KUNDT_LED_BOOT = 0,   /* Arrancando */
     KUNDT_LED_NO_WIFI,    /* Sin red */
     KUNDT_LED_NO_SERVER,  /* WiFi arriba, backend inalcanzable */
     KUNDT_LED_RUNNING,    /* Todo funcionando */
     KUNDT_LED_SELFTEST,   /* Compilación de banco, NO de producción */
+    KUNDT_LED_NO_DATA,    /* Conectado, pero el sensor no entrega nada */
+    KUNDT_LED_FAULT,      /* Estado de fallo: el módulo se detuvo */
+    KUNDT_LED_BUSY,       /* Ejecutando algo con movimiento: no interrumpir */
 } kundt_led_state_t;
 
 /**

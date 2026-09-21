@@ -4,6 +4,8 @@
 
 #include "kundt_led.h"
 
+#include <stdint.h>
+
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -14,17 +16,42 @@ static const char *TAG = "kundt_led";
 static int               s_gpio  = KUNDT_LED_DEFAULT_GPIO;
 static kundt_led_state_t s_state = KUNDT_LED_BOOT;
 
-#define LED_HALF_PERIOD_MS 500 /* toggle cada 500 ms => 1 Hz */
+/*
+ * Patrón por estado, 16 ranuras de 100 ms: un ciclo completo dura 1,6 s.
+ *
+ * Antes la tarea alternaba a 1 Hz ignorando s_state, asi que el LED solo decia
+ * "el firmware corre". Distinguir los estados a simple vista es lo unico que
+ * queda cuando la placa esta montada y no hay puerto serie a mano.
+ *
+ * Bit 0 = primera ranura. Se leen de derecha a izquierda al escribirlos en
+ * binario, por eso los literales van con el destello al final.
+ */
+#define LED_SLOT_MS 100
+#define LED_SLOTS   16
+
+static const uint16_t PATRONES[] = {
+    [KUNDT_LED_BOOT]      = 0xAAAA, /* 1010... parpadeo rapido continuo */
+    [KUNDT_LED_NO_WIFI]   = 0x0005, /* dos destellos y pausa larga */
+    [KUNDT_LED_NO_SERVER] = 0x0015, /* tres destellos y pausa larga */
+    [KUNDT_LED_RUNNING]   = 0x0001, /* un latido corto por ciclo */
+    [KUNDT_LED_SELFTEST]  = 0x00FF, /* mitad encendido, mitad apagado */
+    [KUNDT_LED_NO_DATA]   = 0x0F0F, /* largo encendido, largo apagado */
+    [KUNDT_LED_FAULT]     = 0xFFFF, /* fijo */
+    [KUNDT_LED_BUSY]      = 0x3333, /* 200 ms si, 200 ms no: se ve "trabajando" */
+};
 
 static void led_task(void *arg)
 {
     (void)arg;
 
-    bool on = false;
+    unsigned slot = 0;
     for (;;) {
-        on = !on;
-        gpio_set_level(s_gpio, on);
-        vTaskDelay(pdMS_TO_TICKS(LED_HALF_PERIOD_MS));
+        kundt_led_state_t st = s_state;
+        uint16_t patron = (st < (sizeof(PATRONES) / sizeof(PATRONES[0])))
+                          ? PATRONES[st] : 0xAAAA;
+        gpio_set_level(s_gpio, (patron >> slot) & 1u);
+        slot = (slot + 1u) % LED_SLOTS;
+        vTaskDelay(pdMS_TO_TICKS(LED_SLOT_MS));
     }
 }
 
@@ -80,6 +107,9 @@ const char *kundt_led_state_name(kundt_led_state_t state)
     case KUNDT_LED_NO_SERVER:  return "SIN SERVIDOR";
     case KUNDT_LED_RUNNING:    return "EN MARCHA";
     case KUNDT_LED_SELFTEST:   return "AUTOPRUEBA";
+    case KUNDT_LED_NO_DATA:    return "SIN DATOS";
+    case KUNDT_LED_FAULT:      return "FALLO";
+    case KUNDT_LED_BUSY:       return "OCUPADO";
     default:                   return "desconocido";
     }
 }

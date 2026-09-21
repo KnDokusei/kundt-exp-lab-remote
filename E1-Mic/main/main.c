@@ -197,9 +197,19 @@ static void proyectar_led(void)
     if (kundt_wifi_is_connected() && kundt_mqtt_is_connected()) {
         kundt_ota_confirmar();
     }
-    kundt_led_set_state(!kundt_wifi_is_connected() ? KUNDT_LED_NO_WIFI
-                        : kundt_mqtt_is_connected() ? KUNDT_LED_RUNNING
-                                                    : KUNDT_LED_NO_SERVER);
+    /*
+     * El LED proyecta primero los problemas de enlace y despues el estado de la
+     * maquina. Con la placa montada no hay puerto serie a mano, asi que esto es
+     * lo unico que distingue "midiendo" de "conectado pero sin audio", que es
+     * justo el par que antes se veia igual.
+     */
+    kundt_led_state_t led;
+    if (!kundt_wifi_is_connected())      led = KUNDT_LED_NO_WIFI;
+    else if (!kundt_mqtt_is_connected()) led = KUNDT_LED_NO_SERVER;
+    else if (s_estado == E1_FALLA)       led = KUNDT_LED_FAULT;
+    else if (s_estado == E1_SIN_DATOS)   led = KUNDT_LED_NO_DATA;
+    else                                 led = KUNDT_LED_RUNNING;
+    kundt_led_set_state(led);
 }
 
 static void telemetria(void)

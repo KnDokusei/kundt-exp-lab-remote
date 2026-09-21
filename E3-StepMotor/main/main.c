@@ -134,6 +134,36 @@ static void on_actuators(const kundt_mqtt_actuators_t *act, void *ctx)
     }
 }
 
+/*
+ * El LED es la única vía por la que E3 puede decir algo cuando no ha llegado a
+ * IDLE: su cliente MQTT arranca ahí, así que en FALLA o calibrando el módulo es
+ * invisible desde el servidor. Antes ni siquiera encendía un patrón distinto.
+ *
+ * El orden importa: primero los problemas de enlace, luego el estado propio.
+ */
+static void proyectar_led(void)
+{
+    kundt_led_state_t led;
+
+    if (s_estado == E3_FALLA) {
+        led = KUNDT_LED_FAULT;
+    } else if (s_estado == E3_INIT || s_estado == E3_BARRIDO_IZQ
+               || s_estado == E3_BARRIDO_DER || s_estado == E3_REFERENCIA) {
+        /* Calibrando: el motor se mueve y todavía no se aceptan consignas. */
+        led = KUNDT_LED_BUSY;
+    } else if (!kundt_wifi_is_connected()) {
+        led = KUNDT_LED_NO_WIFI;
+    } else if (!kundt_mqtt_is_connected()) {
+        led = KUNDT_LED_NO_SERVER;
+    } else if (s_estado == E3_MOVIENDO) {
+        led = KUNDT_LED_BUSY;
+    } else {
+        led = KUNDT_LED_RUNNING;
+    }
+
+    kundt_led_set_state(led);
+}
+
 static void publicar(void)
 {
     bool izq, der;
@@ -247,6 +277,8 @@ static void fsm_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         ticks++;
+
+        proyectar_led();
 
         bool izq, der;
         stepper_read_switches(&izq, &der);
