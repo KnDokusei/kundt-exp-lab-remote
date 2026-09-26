@@ -5,7 +5,11 @@
  * sondeo periódico. curiousBeagle usa MQTT y dos canales:
  *
  *   dev-status/kundt/<platform>/<controller>    dispositivo -> servidor
- *   ctrl-channel/kundt/<platform>/<controller>  servidor -> dispositivo
+ *   ctrl-channel/kundt/<platform>/<fila>        servidor -> dispositivo
+ *
+ * El último segmento no es el mismo número en los dos sentidos: al subir va el
+ * controller_id, y al bajar el servidor pone el id de su fila Kundt. Por eso la
+ * suscripción es ctrl-channel/kundt/<platform>/+.
  *
  * Los tres módulos comparten un único controlador lógico y se distinguen por
  * los campos que publican, así que los tres usan el MISMO tópico. El manejador

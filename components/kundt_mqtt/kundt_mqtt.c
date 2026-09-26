@@ -148,8 +148,16 @@ esp_err_t kundt_mqtt_start(const char *broker_uri,
 
     snprintf(s_topic_pub, sizeof(s_topic_pub), "dev-status/%s/%u/%u",
              KUNDT_MQTT_TOPIC, (unsigned)platform_id, (unsigned)controller_id);
-    snprintf(s_topic_sub, sizeof(s_topic_sub), "ctrl-channel/%s/%u/%u",
-             KUNDT_MQTT_TOPIC, (unsigned)platform_id, (unsigned)controller_id);
+    /*
+     * Comodín en el último segmento. El servidor resuelve lo que sube por
+     * controller_id, pero publica las consignas con el id de su fila Kundt
+     * (publishUpdate recibe entry.id). En el banco ambos valían 1; en
+     * producción no, y las consignas caían en un tópico que ninguna placa
+     * escuchaba. Cada plataforma tiene un único controlador lógico de Kundt,
+     * así que escuchar toda la plataforma no recoge consignas ajenas.
+     */
+    snprintf(s_topic_sub, sizeof(s_topic_sub), "ctrl-channel/%s/%u/+",
+             KUNDT_MQTT_TOPIC, (unsigned)platform_id);
 
     /*
      * client_id explícito, derivado del MAC.
