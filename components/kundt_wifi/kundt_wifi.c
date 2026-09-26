@@ -4,6 +4,8 @@
 
 #include "kundt_wifi.h"
 
+#include "kundt_config.h"
+
 #include <string.h>
 
 #include "esp_event.h"
@@ -27,6 +29,8 @@ static uint32_t           s_retry_delay_ms = KUNDT_WIFI_RETRY_MIN_MS;
 static uint32_t           s_disconnects;
 static char               s_ip[16] = "0.0.0.0";
 static esp_timer_handle_t s_retry_timer;
+
+static void aplicar_ip_fija(void);
 
 static void retry_timer_cb(void *arg)
 {
@@ -107,6 +111,8 @@ esp_err_t kundt_wifi_init(void)
         return ESP_FAIL;
     }
 
+    aplicar_ip_fija();
+
     const wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
 
@@ -126,6 +132,51 @@ esp_err_t kundt_wifi_init(void)
 
     s_initialised = true;
     return ESP_OK;
+}
+
+/*
+ * Dirección fija, si la hay en NVS. Sin ella no se toca nada y la placa sigue
+ * con DHCP, que es lo que hacen todas las ya desplegadas.
+ *
+ * Hay que parar el cliente DHCP ANTES de fijar la dirección: con él corriendo,
+ * esp_netif_set_ip_info devuelve ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED y la
+ * configuración se pierde en silencio.
+ *
+ * No se valida que la máscara abarque la puerta de enlace: si no lo hace, la
+ * placa asocia al WiFi y queda incomunicada. Es responsabilidad de quien
+ * provisiona, y por eso se registra en el log lo que se aplica.
+ */
+static void aplicar_ip_fija(void)
+{
+    kundt_config_t cfg_buf;
+    if (kundt_config_get(&cfg_buf) != ESP_OK || cfg_buf.static_ip[0] == '\0') {
+        return;  /* DHCP */
+    }
+    const kundt_config_t *cfg = &cfg_buf;
+
+    esp_netif_ip_info_t ip = {0};
+    if (esp_netif_str_to_ip4(cfg->static_ip, &ip.ip) != ESP_OK
+        || esp_netif_str_to_ip4(cfg->netmask, &ip.netmask) != ESP_OK
+        || esp_netif_str_to_ip4(cfg->gateway, &ip.gw) != ESP_OK) {
+        ESP_LOGE(TAG, "IP fija mal formada (%s / %s / %s); se sigue con DHCP",
+                 cfg->static_ip, cfg->netmask, cfg->gateway);
+        return;
+    }
+
+    esp_err_t err = esp_netif_dhcpc_stop(s_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGE(TAG, "esp_netif_dhcpc_stop: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = esp_netif_set_ip_info(s_netif, &ip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_netif_set_ip_info: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGW(TAG, "IP fija: %s máscara %s puerta %s",
+             cfg->static_ip, cfg->netmask, cfg->gateway);
 }
 
 esp_err_t kundt_wifi_connect(const char *ssid, const char *password)

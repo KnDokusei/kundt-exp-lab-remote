@@ -65,6 +65,9 @@ while [[ $# -gt 0 ]]; do
     --ssid)       SSID="$2"; shift 2 ;;
     --pass)       PASS="$2"; shift 2 ;;
     --server)     SERVER="$2"; shift 2 ;;
+    --ip)         STATIC_IP="$2"; shift 2 ;;
+    --mask)       NETMASK="$2"; shift 2 ;;
+    --gw)         GATEWAY="$2"; shift 2 ;;
     --port)       PORT="$2"; shift 2 ;;
     --baud)       BAUD="$2"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
@@ -105,6 +108,17 @@ kit,data,u8,$KIT
 plat,data,u8,$PLATFORM
 ctrl,data,u8,$CONTROLLER
 EOF
+
+# Direccion fija: solo se escriben las claves si se pidio --ip. Sin ellas el
+# firmware usa DHCP, que es lo que hacen todas las placas ya desplegadas.
+if [[ -n "${STATIC_IP:-}" ]]; then
+    cat >> "$CSV" <<EOF
+ip,data,string,$STATIC_IP
+mask,data,string,${NETMASK:-255.255.255.0}
+gw,data,string,${GATEWAY:-10.31.204.1}
+EOF
+    echo "  IP fija: $STATIC_IP  mascara ${NETMASK:-255.255.255.0}  puerta ${GATEWAY:-10.31.204.1}"
+fi
 
 echo "  kit=$KIT  platform_id=$PLATFORM  controller_id=$CONTROLLER"
 echo "  ssid=$SSID  servidor=$SERVER"

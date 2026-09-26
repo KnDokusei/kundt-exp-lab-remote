@@ -45,6 +45,19 @@ typedef struct {
      * numeración de kit, por eso va aparte. */
     uint8_t  platform_id;
     uint8_t  controller_id;
+
+    /*
+     * Dirección fija opcional. Vacía = DHCP, que es el comportamiento de
+     * siempre y el de todas las placas ya desplegadas.
+     *
+     * Existe porque el laboratorio asigna una dirección fija a cada placa y
+     * curiousBeagle registra cada cámara por su IP: con DHCP cambian, y el
+     * firmware no tenía forma de tomarlas. OJO: la máscara tiene que abarcar la
+     * puerta de enlace, o la placa asocia al WiFi y queda incomunicada.
+     */
+    char     static_ip[KUNDT_IP_MAX_LEN + 1];
+    char     netmask[KUNDT_IP_MAX_LEN + 1];
+    char     gateway[KUNDT_IP_MAX_LEN + 1];
 } kundt_config_t;
 
 /**

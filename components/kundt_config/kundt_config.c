@@ -20,6 +20,9 @@ static const char *TAG = "kundt_config";
 #define KEY_KIT       "kit"
 #define KEY_PLATFORM  "plat"
 #define KEY_CONTROLLER "ctrl"
+#define KEY_STATIC_IP  "ip"
+#define KEY_NETMASK    "mask"
+#define KEY_GATEWAY    "gw"
 
 static kundt_config_t s_cfg;
 static bool           s_loaded;
@@ -114,6 +117,11 @@ esp_err_t kundt_config_init(void)
                            CONFIG_KUNDT_DEFAULT_WIFI_SSID);
     nvs_get_str_or_default(h, KEY_PASSWORD, s_cfg.wifi_password, sizeof(s_cfg.wifi_password),
                            CONFIG_KUNDT_DEFAULT_WIFI_PASSWORD);
+    /* Sin valor por defecto: la ausencia de la clave significa DHCP. */
+    nvs_get_str_or_default(h, KEY_STATIC_IP, s_cfg.static_ip, sizeof(s_cfg.static_ip), "");
+    nvs_get_str_or_default(h, KEY_NETMASK,   s_cfg.netmask,   sizeof(s_cfg.netmask),   "");
+    nvs_get_str_or_default(h, KEY_GATEWAY,   s_cfg.gateway,   sizeof(s_cfg.gateway),   "");
+
     nvs_get_str_or_default(h, KEY_SERVER_IP, s_cfg.server_ip, sizeof(s_cfg.server_ip),
                            CONFIG_KUNDT_DEFAULT_SERVER_IP);
 
