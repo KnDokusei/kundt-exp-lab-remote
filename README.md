@@ -65,13 +65,18 @@ Tras un `erase-flash` hay que reprovisionar: un `flash` normal no cambia la NVS.
 ## Actualización por aire (OTA)
 
 ```bash
-tools/provision/kundt-ota.sh --modulo e1 --kit 1
+tools/provision/kundt-ota.sh --modulo e1 --plataforma 8
 ```
 
 Sirve la imagen desde un HTTP efímero en el PC y publica la URL. Los tópicos
-(`kundt-ota/<modulo>/<kit>` y `.../all`) están fuera del contrato del servidor a
+(`kundt-ota/<modulo>/<platform_id>` y `.../all`) están fuera del contrato del servidor a
 propósito. Una imagen nueva arranca a prueba: si no alcanza WiFi y broker, el
 bootloader revierte sola.
+
+**Se direcciona por plataforma, no por kit**: es el `platform_id` de curiousBeagle
+y no coinciden (en producción el kit 1 es la plataforma 8). La orden se publica
+en el broker que usan las placas, el de `~/.kundt-provision.conf`, y el PC tiene
+que estar en la red del laboratorio para que puedan descargar la imagen.
 
 ## Tests
 
