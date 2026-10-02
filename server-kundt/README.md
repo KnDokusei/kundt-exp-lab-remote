@@ -1,8 +1,9 @@
 # server-kundt
 
 Aporte al servidor **curiousBeagle** para dar de alta el tipo de experimento
-`kundt`. Vive aquí y no como pull request porque curiousBeagle pertenece a otro
-equipo (DopamineLabsLTDA) y el molde que se copió es suyo y todavía preliminar.
+`kundt`. Se preparó aquí, como parches, cuando todavía no había permiso para abrir
+pull requests en curiousBeagle (DopamineLabsLTDA). El tipo y la vista están en
+producción desde septiembre de 2026: ver `entrega-1/` y `entrega-3/`.
 
 ## Qué contiene
 

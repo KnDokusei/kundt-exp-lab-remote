@@ -18,13 +18,16 @@ flasheable por separado. Se coordinan sólo a través del servidor, por MQTT.
 
 | Módulo | Qué hace | Estado |
 |---|---|---|
-| `E1-Mic` | Mide la amplitud del tono con Goertzel y publica escalares | En placa, validado |
-| `E2-SineGen` | Genera el tono (AD9833) y el volumen (servo) | En placa, validado |
-| `E3-StepMotor` | Mueve el émbolo (A4988) y reporta su posición | En placa, calibra |
-| `EC-Cameras` | Tres ESP32-CAM sirviendo MJPEG | En placa, 3 funcionando |
+| `E1-Mic` | Mide la amplitud del tono con Goertzel y publica escalares | En producción, kit 1 |
+| `E2-SineGen` | Genera el tono (AD9833) y el volumen (servo) | En producción, kit 1 |
+| `E3-StepMotor` | Mueve el émbolo (A4988) y reporta su posición | En producción, kit 1 |
+| `EC-Cameras` | ESP32-CAM sirviendo MJPEG por HTTP | Respaldo |
 
 Los tres primeros comparten `platform_id` y `controller_id` a propósito: son un
 solo controlador lógico y se distinguen por los campos que publican.
+
+En producción las cámaras corren el firmware RTSP de curiousBeagle, con los
+arreglos de `camaras-rtsp/`.
 
 ## Compilar y flashear
 
@@ -89,11 +92,15 @@ Compilan la misma unidad de DSP que el firmware, con gcc.
 ## Aporte al servidor
 
 `server-kundt/` contiene el alta del experimento en **curiousBeagle**, el
-servidor del laboratorio (repositorios privados de otro equipo).
+servidor del laboratorio (repositorios privados de otro equipo). Cada entrega es
+una serie de parches aplicable con `git am`, con su README.
 
-`server-kundt/entrega-1/` es la entrega lista para revisar: serie de parches
-aplicable con `git am`, con su README explicando qué toca, qué no toca y cómo
-montarlo.
+| Entrega | Qué trae | Estado |
+|---|---|---|
+| `entrega-1/` | El tipo `kundt` en la API y la vista en el front | Tipo y vista fusionados en septiembre de 2026 (curiousBeagleAPI #38 y #40, curiousBeagleFront #77). La coalescencia (`0002`) y la siembra local (`0003`) no se incorporaron |
+| `entrega-3/` | Caja de frecuencia, cámaras a 4:3 y tabla de mediciones con ajuste f vs 1/λ | Fusionada el 2026-10-02 (curiousBeagleFront #78) |
+
+La entrega 2 quedó obsoleta antes de enviarse y no está en el repositorio.
 
 Este repositorio es **privado**, así que la entrega no se comparte por enlace:
 se envía como archivo o se da acceso de lectura a quien deba revisarla. Los
