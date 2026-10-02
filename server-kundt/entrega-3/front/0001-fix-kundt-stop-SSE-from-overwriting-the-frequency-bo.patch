@@ -1,0 +1,62 @@
+From c466cbc87e9743a60cbbc6d51c3e546ab3e1dbac Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:13 -0300
+Subject: [PATCH 1/5] fix(kundt): stop SSE from overwriting the frequency box
+
+---
+ src/pages/experiments/Kundt/Kundt.tsx | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/src/pages/experiments/Kundt/Kundt.tsx b/src/pages/experiments/Kundt/Kundt.tsx
+index dad2962..a12f08b 100644
+--- a/src/pages/experiments/Kundt/Kundt.tsx
++++ b/src/pages/experiments/Kundt/Kundt.tsx
+@@ -190,6 +190,13 @@ export default function Kundt() {
+      * nueva, asi que sincronizar en ese momento la haria saltar hacia atras.
+      */
+     const draggingRef = useRef(false);
++    /*
++     * Mientras la caja de frecuencia tiene el foco, el SSE no la reescribe. La
++     * fila llega 13 veces por segundo con la frecuencia vigente, y sin esto cada
++     * mensaje devolvia la caja al valor anterior a los ~80 ms: no se podia
++     * escribir ni usar las flechas. Se aplica con Enter o al salir de la caja.
++     */
++    const editingFreqRef = useRef<boolean>(false);
+ 
+     const [freqDraft, setFreqDraft] = useState<number>(initial.frequency);
+     /* Texto de la caja de frecuencia. Va aparte del numero porque mientras se
+@@ -305,7 +312,7 @@ export default function Kundt() {
+                 setFrequency(data.frequency);
+                 if (!draggingRef.current) {
+                     setFreqDraft(data.frequency);
+-                    setFreqText(String(data.frequency));
++                    if (!editingFreqRef.current) setFreqText(String(data.frequency));
+                     setVolumeDraft(data.volume);
+                     setPlungerDraft(data.plunger_pos);
+                 }
+@@ -461,6 +468,11 @@ export default function Kundt() {
+             return;
+         }
+         const clamped = Math.round(Math.min(FREQ_MAX_HZ, Math.max(FREQ_MIN_HZ, parsed)));
++        // Salir de la caja sin haber cambiado nada no debe mandar otra consigna.
++        if (clamped === frequency) {
++            setFreqText(String(clamped));
++            return;
++        }
+         if (clamped !== parsed) {
+             showSnackBar({
+                 severity: "info",
+@@ -542,8 +554,9 @@ export default function Kundt() {
+                                         <TextField
+                                             value={freqText}
+                                             onChange={(e) => setFreqText(e.target.value)}
++                                            onFocus={() => { editingFreqRef.current = true; }}
+                                             onKeyDown={(e) => { if (e.key === "Enter") commitFrequencyText(); }}
+-                                            onBlur={commitFrequencyText}
++                                            onBlur={() => { editingFreqRef.current = false; commitFrequencyText(); }}
+                                             size="small"
+                                             type="number"
+                                             sx={{ width: 130, flexShrink: 0 }}
+-- 
+2.43.0
+

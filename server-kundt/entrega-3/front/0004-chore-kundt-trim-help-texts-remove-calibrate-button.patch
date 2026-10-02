@@ -1,0 +1,90 @@
+From 3be88fedae8f6e5d5f0084d33bcca7aa6da7dc57 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:13 -0300
+Subject: [PATCH 4/5] chore(kundt): trim help texts, remove calibrate button
+
+---
+ src/pages/experiments/Kundt/Kundt.tsx | 25 ++-----------------------
+ 1 file changed, 2 insertions(+), 23 deletions(-)
+
+diff --git a/src/pages/experiments/Kundt/Kundt.tsx b/src/pages/experiments/Kundt/Kundt.tsx
+index 1b11b72..449781e 100644
+--- a/src/pages/experiments/Kundt/Kundt.tsx
++++ b/src/pages/experiments/Kundt/Kundt.tsx
+@@ -22,7 +22,6 @@ import type { KundtSample, KundtSensors, KundtSSE, KundtStatusDTO } from "../../
+ import GraphicEqIcon from "@mui/icons-material/GraphicEq";
+ import VolumeUpIcon from "@mui/icons-material/VolumeUp";
+ import StraightenIcon from "@mui/icons-material/Straighten";
+-import HomeIcon from "@mui/icons-material/Home";
+ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+ import StopIcon from "@mui/icons-material/Stop";
+ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+@@ -498,10 +497,6 @@ export default function Kundt() {
+         send({ plunger_pos: cm }, `Émbolo enviado a ${cm} cm.`);
+     };
+ 
+-    const calibrate = () => {
+-        send({ calibrate: true }, "Calibración solicitada: el émbolo buscará el fin de carrera.");
+-    };
+-
+     /* Edad del ultimo dato. lastUpdate en 0 significa que aun no ha llegado
+      * ninguno: lo que se ve es lo que trajo el cargador al abrir la pagina. */
+     const dataAgeMs = lastUpdate === 0 ? Infinity : now - lastUpdate;
+@@ -584,10 +579,6 @@ export default function Kundt() {
+                                             onChangeCommitted={(_, v) => { draggingRef.current = false; commitFrequency(sliderToFreq(v as number)); }}
+                                         />
+                                     </Stack>
+-                                    <Typography variant="caption" color="text.secondary">
+-                                        Escala logarítmica de {FREQ_MIN_HZ} Hz a {FREQ_MAX_HZ / 1000} kHz.
+-                                        La caja y la barra están sincronizadas; la caja aplica con Enter o al salir.
+-                                    </Typography>
+                                 </Box>
+ 
+                                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+@@ -623,7 +614,7 @@ export default function Kundt() {
+                                         />
+                                     </Stack>
+                                     <Typography variant="caption" color="text.secondary">
+-                                        Es el ángulo del servo que gira el potenciómetro, no un porcentaje.
++                                        Es el ángulo del servo que gira el potenciómetro.
+                                     </Typography>
+                                 </Box>
+                             </Stack>
+@@ -682,12 +673,6 @@ export default function Kundt() {
+                                     />
+                                 </Stack>
+ 
+-                                <ButtonCB variant="outlined" startIcon={<HomeIcon />} onClick={calibrate}>
+-                                    Calibrar
+-                                </ButtonCB>
+-                                <Typography variant="caption" color="text.secondary">
+-                                    Lleva el émbolo contra el fin de carrera y fija el cero. Hazlo antes de medir.
+-                                </Typography>
+                             </Stack>
+                         </CardContent>
+                     </Card>
+@@ -737,12 +722,6 @@ export default function Kundt() {
+                                         Baja el volumen o la ganancia del preamplificador.
+                                     </Alert>
+                                 )}
+-                                {!saturating && headroom > 0 && headroom < 4 && (
+-                                    <Alert severity="warning">
+-                                        Poco margen (×{headroom.toFixed(1)}). Al entrar en resonancia la amplitud
+-                                        se multiplica y puede recortar. Ajusta fuera de resonancia dejando ×4.
+-                                    </Alert>
+-                                )}
+                             </Stack>
+                         </CardContent>
+                     </Card>
+@@ -765,7 +744,7 @@ export default function Kundt() {
+                                 </ButtonCB>
+ 
+                                 <Alert severity="info">
+-                                    Es una <b>reconstrucción</b>. El micrófono envía la amplitud medida, no la onda:
++                                    Es una <b>reconstrucción</b>. El micrófono envía la amplitud medida, no la señal original:
+                                     el navegador sintetiza un tono a {frequency} Hz y sigue esa amplitud.
+                                     Oirás cómo sube y baja al pasar por las resonancias, pero no el timbre real del tubo.
+                                 </Alert>
+-- 
+2.43.0
+

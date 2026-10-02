@@ -1,0 +1,94 @@
+From 05c492325677c37215c39166a99da3f926e4b6a5 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:13 -0300
+Subject: [PATCH 2/5] feat(cameras): optional aspect ratio, 4:3 for Kundt
+
+---
+ src/components/cameraviewer/CameraViewer.tsx   | 8 ++++++--
+ src/components/cameraviewer/CamerasDisplay.tsx | 3 +++
+ src/pages/experiments/Kundt/Kundt.tsx          | 8 +++++++-
+ 3 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/src/components/cameraviewer/CameraViewer.tsx b/src/components/cameraviewer/CameraViewer.tsx
+index 4e51d61..2daa5e7 100644
+--- a/src/components/cameraviewer/CameraViewer.tsx
++++ b/src/components/cameraviewer/CameraViewer.tsx
+@@ -15,6 +15,10 @@ interface CameraViewerProps {
+      * Omitirlo deja el comportamiento anterior: sin voltear, y el boton sigue
+      * disponible para cambiarlo en caliente. */
+     defaultFlipped?: boolean;
++    /* Proporcion del recuadro, en sintaxis CSS ("4 / 3"). Tiene que coincidir con
++     * la del video: si no, el reproductor rellena con franjas negras. Omitirlo
++     * deja el 16:9 de siempre. */
++    aspectRatio?: string;
+ }
+ 
+ 
+@@ -120,7 +124,7 @@ export default function CameraViewer(props: CameraViewerProps) {
+                             image={stream_url}
+                             sx={{
+                                 width: "100%",
+-                                aspectRatio: "16 / 9",
++                                aspectRatio: props.aspectRatio ?? "16 / 9",
+                                 border: 0,
+                                 display: "block",
+                                 transform: flipped ? "scaleY(-1)" : "none",
+@@ -137,7 +141,7 @@ export default function CameraViewer(props: CameraViewerProps) {
+                     <Box
+                         sx={{
+                             width: `${props.width}vw`,
+-                            aspectRatio: 1280 / 720,
++                            aspectRatio: props.aspectRatio ?? "16 / 9",
+                             display: "flex",
+                             alignItems: "center",
+                             justifyContent: "center"
+diff --git a/src/components/cameraviewer/CamerasDisplay.tsx b/src/components/cameraviewer/CamerasDisplay.tsx
+index 65fa3ed..bdf690a 100644
+--- a/src/components/cameraviewer/CamerasDisplay.tsx
++++ b/src/components/cameraviewer/CamerasDisplay.tsx
+@@ -8,6 +8,8 @@ interface CameraDisplayProps {
+     setCameraPosition?: (pos: number) => void;
+     /* Nombres de camara que arrancan volteadas verticalmente. */
+     flipped_cameras?: string[];
++    /* Proporcion de los recuadros; ver CameraViewer. */
++    aspect_ratio?: string;
+ }
+ 
+ const MAX_PERCENTAGE_LENGTH_VIEWER = 90;
+@@ -43,6 +45,7 @@ export default function CamerasDisplay(props: CameraDisplayProps) {
+                         width={computed_width}
+                         key={camera.id}
+                         defaultFlipped={props.flipped_cameras?.includes(camera.name)}
++                        aspectRatio={props.aspect_ratio}
+                     />
+                 </Grid>
+             ))}
+diff --git a/src/pages/experiments/Kundt/Kundt.tsx b/src/pages/experiments/Kundt/Kundt.tsx
+index a12f08b..2e8c450 100644
+--- a/src/pages/experiments/Kundt/Kundt.tsx
++++ b/src/pages/experiments/Kundt/Kundt.tsx
+@@ -55,6 +55,12 @@ const LINK_GRACE_MS = 4000;
+ /* Por encima de esto los datos en pantalla dejan de considerarse frescos. */
+ const STALE_MS = 3000;
+ 
++/*
++ * Las camaras del tubo transmiten VGA (640x480), es decir 4:3. En el recuadro
++ * de 16:9 por defecto el reproductor dejaba franjas negras a los lados.
++ */
++const CAMERA_ASPECT_RATIO = "4 / 3";
++
+ /*
+  * Camaras montadas fisicamente del reves. Es un apaño de presentacion: el
+  * arreglo de fondo es set_vflip() en el firmware de esa placa, que corrige la
+@@ -531,7 +537,7 @@ export default function Kundt() {
+                 />
+             </Stack>
+ 
+-            <CamerasDisplay camera_list={cameras} flipped_cameras={FLIPPED_CAMERAS} />
++            <CamerasDisplay camera_list={cameras} flipped_cameras={FLIPPED_CAMERAS} aspect_ratio={CAMERA_ASPECT_RATIO} />
+ 
+             <Grid container spacing={2.5}>
+ 
+-- 
+2.43.0
+

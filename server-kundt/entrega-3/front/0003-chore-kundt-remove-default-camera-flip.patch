@@ -1,0 +1,35 @@
+From fc81200aa739c9d2641f0981fc1bc3f73266df78 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:13 -0300
+Subject: [PATCH 3/5] chore(kundt): remove default camera flip
+
+---
+ src/pages/experiments/Kundt/Kundt.tsx | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/pages/experiments/Kundt/Kundt.tsx b/src/pages/experiments/Kundt/Kundt.tsx
+index 2e8c450..1b11b72 100644
+--- a/src/pages/experiments/Kundt/Kundt.tsx
++++ b/src/pages/experiments/Kundt/Kundt.tsx
+@@ -62,12 +62,13 @@ const STALE_MS = 3000;
+ const CAMERA_ASPECT_RATIO = "4 / 3";
+ 
+ /*
+- * Camaras montadas fisicamente del reves. Es un apaño de presentacion: el
+- * arreglo de fondo es set_vflip() en el firmware de esa placa, que corrige la
+- * imagen en origen y vale tambien para go2rtc y para cualquier otro consumidor.
+- * Requiere acceso USB a la camara, asi que mientras tanto se corrige aqui.
++ * Camaras que arrancan volteadas en pantalla. Vacia a proposito: la camara
++ * montada del reves ya corrige la imagen en el sensor (espejo vertical y
++ * horizontal en su configuracion), y voltearla aqui tambien la dejaria otra vez
++ * invertida. El nombre que habia ("kundt1-cam3") no coincidia con ninguna camara
++ * de produccion. El boton de volteo de cada camara sigue disponible.
+  */
+-const FLIPPED_CAMERAS = ["kundt1-cam3"];
++const FLIPPED_CAMERAS: string[] = [];
+ 
+ /*
+  * Recorrido util del riel, en cm desde el parlante. Son las posiciones de los
+-- 
+2.43.0
+

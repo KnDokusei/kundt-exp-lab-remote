@@ -1,0 +1,441 @@
+From b40424bdb38f325a59c244ae23cbeb0276dfbb8e Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:13 -0300
+Subject: [PATCH 5/5] =?UTF-8?q?feat(kundt):=20measurement=20table=20with?=
+ =?UTF-8?q?=20f=20vs=201/=CE=BB=20fit?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/pages/experiments/Kundt/Kundt.tsx         | 124 +--------
+ src/pages/experiments/Kundt/WavelengthFit.tsx | 239 ++++++++++++++++++
+ 2 files changed, 250 insertions(+), 113 deletions(-)
+ create mode 100644 src/pages/experiments/Kundt/WavelengthFit.tsx
+
+diff --git a/src/pages/experiments/Kundt/Kundt.tsx b/src/pages/experiments/Kundt/Kundt.tsx
+index 449781e..8e1a5b3 100644
+--- a/src/pages/experiments/Kundt/Kundt.tsx
++++ b/src/pages/experiments/Kundt/Kundt.tsx
+@@ -7,8 +7,8 @@ import CamerasDisplay from "../../../components/cameraviewer/CamerasDisplay";
+ import { ButtonCB } from "../../../components/buttons/button";
+ import { CardTitle } from "../../../components/misc/Title";
+ import { useSnackbar } from "../../../components/toast/ToastProvider";
+-import UserGrid from "../../../components/user-grid/UserGrid";
+ import generatePlotTheme from "../PlotTheme";
++import WavelengthFit from "./WavelengthFit";
+ import { CONTROL_BORDER_CARD_RAIDUS } from "../Constants";
+ 
+ import { getCameraList } from "../../../api/camera";
+@@ -39,9 +39,6 @@ const PEAK_SATURATION = 31000;
+ /* Below this ratio the microphone is hearing room noise, not the tone. */
+ const TONE_RATIO_THRESHOLD = 50;
+ 
+-/* Speed of sound at 20 C, only used to label the expected spacing. */
+-const REFERENCE_SPEED_MS = 343;
+-
+ const MAX_SAMPLES = 600;
+ 
+ /*
+@@ -114,58 +111,6 @@ const VOLUME_MARKS = [
+     { value: 180, label: "180" },
+ ];
+ 
+-/*
+- * Resonance finder.
+- *
+- * Consecutive maxima of the standing wave sit half a wavelength apart, so the
+- * mean spacing between peaks gives v = 2 * spacing * frequency. Peaks are taken
+- * as samples above 60% of the sweep's range that also dominate their
+- * neighbourhood, which is enough for a hand-driven sweep and avoids reporting
+- * every ripple as a resonance.
+- */
+-function findResonances(samples: KundtSample[]): number[] {
+-    if (samples.length < 12) return [];
+-
+-    const sorted = [...samples].sort((a, b) => a.position - b.position);
+-    const amplitudes = sorted.map((s) => s.amplitude);
+-    const lo = Math.min(...amplitudes);
+-    const hi = Math.max(...amplitudes);
+-    if (hi <= lo) return [];
+-
+-    const threshold = lo + (hi - lo) * 0.6;
+-    const window = 3;
+-    const peaks: number[] = [];
+-
+-    for (let i = window; i < sorted.length - window; i++) {
+-        const here = sorted[i].amplitude;
+-        if (here < threshold) continue;
+-
+-        let dominates = true;
+-        for (let k = i - window; k <= i + window; k++) {
+-            if (k !== i && sorted[k].amplitude > here) { dominates = false; break; }
+-        }
+-        if (!dominates) continue;
+-
+-        /* Collapse peaks closer than 2 cm: the same maximum sampled twice. */
+-        const position = sorted[i].position;
+-        if (peaks.length > 0 && Math.abs(position - peaks[peaks.length - 1]) < 2) continue;
+-        peaks.push(position);
+-    }
+-
+-    return peaks;
+-}
+-
+-function speedFromResonances(peaks: number[], frequency: number): number | null {
+-    if (peaks.length < 2 || frequency <= 0) return null;
+-
+-    let total = 0;
+-    for (let i = 1; i < peaks.length; i++) total += peaks[i] - peaks[i - 1];
+-    const mean_spacing_cm = total / (peaks.length - 1);
+-
+-    /* spacing is half a wavelength; cm -> m */
+-    return 2 * (mean_spacing_cm / 100) * frequency;
+-}
+-
+ export default function Kundt() {
+     const initial = useLoaderData() as KundtStatusDTO;
+     const { id } = useParams();
+@@ -240,16 +185,6 @@ export default function Kundt() {
+     const saturating = peak >= PEAK_SATURATION;
+     const headroom = peak > 0 ? PEAK_FULL_SCALE / peak : 0;
+ 
+-    /*
+-     * Estos tres derivados recorren y ordenan hasta 600 muestras. Sin memoizar
+-     * se rehacian en CADA render, incluido el tic de un segundo del indicador de
+-     * frescura, y como chartData nacia como array nuevo cada vez, @nivo volvia a
+-     * dibujar la grafica entera aunque no hubiera llegado ni un dato.
+-     */
+-    const resonances = useMemo(() => findResonances(samples), [samples]);
+-    const measuredSpeed = speedFromResonances(resonances, frequency);
+-    const expectedSpacing = frequency > 0 ? (REFERENCE_SPEED_MS / frequency / 2) * 100 : 0;
+-
+     /* Reloj propio: sin el, "hace 4 s" se quedaria escrito hasta que llegara el
+      * siguiente dato, que es justo el caso en que interesa que avance. */
+     useEffect(() => {
+@@ -505,6 +440,12 @@ export default function Kundt() {
+         ? "sin datos en vivo"
+         : dataAgeMs < 2000 ? "en vivo" : `hace ${Math.round(dataAgeMs / 1000)} s`;
+ 
++    /*
++     * chartData recorre y ordena hasta 600 muestras. Sin memoizar se rehacia en
++     * CADA render, incluido el tic de un segundo del indicador de frescura, y al
++     * nacer como array nuevo cada vez @nivo volvia a dibujar la grafica entera
++     * aunque no hubiera llegado ni un dato.
++     */
+     const chartData = useMemo(() => [{
+         id: "Amplitud",
+         data: [...samples]
+@@ -512,12 +453,6 @@ export default function Kundt() {
+             .map((s) => ({ x: s.position, y: Math.round(s.amplitude) })),
+     }], [samples]);
+ 
+-    const resonanceRows = useMemo(() => resonances.map((position, index) => ({
+-        id: index,
+-        orden: index + 1,
+-        posicion: position.toFixed(1),
+-        separacion: index === 0 ? "—" : (position - resonances[index - 1]).toFixed(1),
+-    })), [resonances]);
+ 
+     return (
+         <Stack spacing={2.5} sx={{ padding: 2 }}>
+@@ -793,47 +728,10 @@ export default function Kundt() {
+                 <Grid size={{ xs: 12 }}>
+                     <Card sx={{ borderRadius: CONTROL_BORDER_CARD_RAIDUS }}>
+                         <CardContent>
+-                            <CardTitle label="Velocidad del sonido" icon={<StraightenIcon />} />
+-
+-                            <Grid container spacing={2} sx={{ marginTop: 1 }}>
+-                                <Grid size={{ xs: 12, md: 5 }}>
+-                                    <Stack spacing={1}>
+-                                        <Typography variant="h4">
+-                                            {measuredSpeed !== null ? `${measuredSpeed.toFixed(1)} m/s` : "—"}
+-                                        </Typography>
+-                                        <Typography variant="caption" color="text.secondary">
+-                                            v = 2 · separación entre resonancias · frecuencia
+-                                        </Typography>
+-                                        <Typography variant="body2">
+-                                            Resonancias detectadas: <b>{resonances.length}</b>
+-                                        </Typography>
+-                                        <Typography variant="body2" color="text.secondary">
+-                                            A {frequency} Hz deberían estar cada {expectedSpacing.toFixed(1)} cm
+-                                            si la velocidad fuera {REFERENCE_SPEED_MS} m/s.
+-                                        </Typography>
+-                                        {resonances.length < 2 && (
+-                                            <Alert severity="info">
+-                                                Hacen falta al menos dos resonancias. Barre el émbolo por todo
+-                                                el recorrido sin saltarte tramos.
+-                                            </Alert>
+-                                        )}
+-                                    </Stack>
+-                                </Grid>
+-
+-                                <Grid size={{ xs: 12, md: 7 }}>
+-                                    {resonanceRows.length > 0 && (
+-                                        <UserGrid
+-                                            data_rows={resonanceRows}
+-                                            header_cols={[
+-                                                { field: "orden", headerName: "Máximo", flex: 1 },
+-                                                { field: "posicion", headerName: "Posición [cm]", flex: 1 },
+-                                                { field: "separacion", headerName: "Separación [cm]", flex: 1 },
+-                                            ]}
+-                                            disable_check
+-                                        />
+-                                    )}
+-                                </Grid>
+-                            </Grid>
++                            <CardTitle label="Mediciones" icon={<StraightenIcon />} />
++                            <Box sx={{ marginTop: 2 }}>
++                                <WavelengthFit />
++                            </Box>
+                         </CardContent>
+                     </Card>
+                 </Grid>
+diff --git a/src/pages/experiments/Kundt/WavelengthFit.tsx b/src/pages/experiments/Kundt/WavelengthFit.tsx
+new file mode 100644
+index 0000000..037498e
+--- /dev/null
++++ b/src/pages/experiments/Kundt/WavelengthFit.tsx
+@@ -0,0 +1,239 @@
++import { Box, Collapse, IconButton, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography, useTheme } from "@mui/material";
++import { ResponsiveLine, type LineCustomSvgLayerProps, type PointTooltipProps } from "@nivo/line";
++import { useMemo, useState } from "react";
++
++import { ButtonCB } from "../../../components/buttons/button";
++import generatePlotTheme from "../PlotTheme";
++
++import AddIcon from "@mui/icons-material/Add";
++import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
++import ShowChartIcon from "@mui/icons-material/ShowChart";
++
++/*
++ * Tabla de mediciones que llena el estudiante a mano (d_min, f, λ y λ/2) y grafico de
++ * f frente a 1/λ con su ajuste lineal. Como f = v · (1/λ), la pendiente del
++ * ajuste es la velocidad del sonido y el intercepto deberia salir cerca de 0.
++ *
++ * Todo en metros: d_min, λ y λ/2 en m, y el eje x en m⁻¹, asi la pendiente
++ * sale directamente en m/s.
++ */
++
++/* d_min es solo una anotacion del estudiante (la distancia al minimo que midio,
++ * para calcular λ a mano): no entra en ningun calculo ni en el grafico. */
++type Row = { id: number; dmin: string; f: string; lambda: string; half: string };
++type Serie = { id: string; data: { x: number; y: number }[] };
++
++const POINTS_ID = "Mediciones";
++const FIT_ID = "Ajuste lineal";
++/* Validados con el validador de paletas en tema claro y oscuro. */
++const POINTS_COLOR = "#1f77b4";
++const FIT_COLOR = "#dd6b08";
++const INITIAL_ROWS = 3;
++
++/* Acepta coma o punto decimal: en Chile se escribe "34,5". */
++const parse = (text: string) => {
++    const t = text.trim().replace(",", ".");
++    return t === "" ? NaN : Number(t);
++};
++/* 4 decimales: en metros, 0,343 / 2 = 0,1715 no debe quedar en 0,172. */
++const format = (value: number) => String(Number(value.toFixed(4)));
++
++const emptyRow = (id: number): Row => ({ id, dmin: "", f: "", lambda: "", half: "" });
++
++export default function WavelengthFit() {
++    const theme = useTheme();
++    const [rows, setRows] = useState<Row[]>(() => Array.from({ length: INITIAL_ROWS }, (_, i) => emptyRow(i)));
++    const [nextId, setNextId] = useState<number>(INITIAL_ROWS);
++    const [showChart, setShowChart] = useState<boolean>(false);
++
++    const update = (id: number, change: (row: Row) => Row) =>
++        setRows((previous) => previous.map((row) => (row.id === id ? change(row) : row)));
++
++    /* λ y λ/2 se rellenan entre si: se escribe la que se haya medido y la otra
++     * se calcula, asi no pueden quedar incoherentes. */
++    const setLambda = (id: number, text: string) => update(id, (row) => {
++        const value = parse(text);
++        return { ...row, lambda: text, half: Number.isFinite(value) ? format(value / 2) : (text.trim() === "" ? "" : row.half) };
++    });
++    const setHalf = (id: number, text: string) => update(id, (row) => {
++        const value = parse(text);
++        return { ...row, half: text, lambda: Number.isFinite(value) ? format(value * 2) : (text.trim() === "" ? "" : row.lambda) };
++    });
++
++    const addRow = () => {
++        setRows((previous) => [...previous, emptyRow(nextId)]);
++        setNextId((n) => n + 1);
++    };
++    const removeRow = (id: number) =>
++        setRows((previous) => (previous.length > 1 ? previous.filter((row) => row.id !== id) : [emptyRow(id)]));
++
++    /* Puntos validos: f y λ positivos. x = 1/λ en m⁻¹ (λ en m). */
++    const points = useMemo(() => rows
++        .map((row, index) => ({ n: index + 1, f: parse(row.f), lambda: parse(row.lambda) }))
++        .filter((p) => p.f > 0 && p.lambda > 0)
++        .map((p) => ({ n: p.n, x: 1 / p.lambda, y: p.f })), [rows]);
++
++    /* Minimos cuadrados. Hace falta al menos dos λ distintas. */
++    const fit = useMemo(() => {
++        const n = points.length;
++        if (n < 2) return null;
++        const sx = points.reduce((a, p) => a + p.x, 0);
++        const sy = points.reduce((a, p) => a + p.y, 0);
++        const sxx = points.reduce((a, p) => a + p.x * p.x, 0);
++        const sxy = points.reduce((a, p) => a + p.x * p.y, 0);
++        const den = n * sxx - sx * sx;
++        if (Math.abs(den) < 1e-12) return null;
++        const m = (n * sxy - sx * sy) / den;
++        const b = (sy - m * sx) / n;
++        return { m, b };
++    }, [points]);
++
++    const chartData = useMemo<Serie[]>(() => {
++        const series: Serie[] = [{ id: POINTS_ID, data: points.map((p) => ({ x: p.x, y: p.y })) }];
++        if (fit) {
++            /* La recta arranca en x = 0 para que se vea el intercepto b. */
++            const xMax = Math.max(...points.map((p) => p.x)) * 1.05;
++            series.push({ id: FIT_ID, data: [{ x: 0, y: fit.b }, { x: xMax, y: fit.m * xMax + fit.b }] });
++        }
++        return series;
++    }, [points, fit]);
++
++    const surface = theme.palette.background.paper;
++
++    const FitLayer = ({ series, lineGenerator }: LineCustomSvgLayerProps<Serie>) => (
++        <>
++            {series.filter((s) => s.id === FIT_ID).map((s) => (
++                <path
++                    key={s.id}
++                    d={lineGenerator(s.data.map((d) => d.position)) ?? undefined}
++                    fill="none"
++                    stroke={s.color}
++                    strokeWidth={2}
++                />
++            ))}
++        </>
++    );
++
++    const PointsLayer = ({ points: drawn }: LineCustomSvgLayerProps<Serie>) => (
++        <>
++            {drawn.filter((p) => p.seriesId === POINTS_ID).map((p) => (
++                <circle key={p.id} cx={p.x} cy={p.y} r={5} fill={p.color} stroke={surface} strokeWidth={2} />
++            ))}
++        </>
++    );
++
++    const Tooltip = ({ point }: PointTooltipProps<Serie>) => {
++        if (point.seriesId !== POINTS_ID) return null;
++        const p = points[point.indexInSeries];
++        return (
++            <Box sx={{ background: surface, color: "text.primary", padding: 1, borderRadius: 1, boxShadow: 2 }}>
++                <Typography variant="caption" display="block"><b>Medición {p.n}</b></Typography>
++                <Typography variant="caption" display="block">f = {format(p.y)} Hz</Typography>
++                <Typography variant="caption" display="block">1/λ = {p.x.toFixed(3)} m⁻¹</Typography>
++            </Box>
++        );
++    };
++
++    const cell = (label: string, value: string, onChange: (text: string) => void) => (
++        <TextField
++            value={value}
++            onChange={(e) => onChange(e.target.value)}
++            size="small"
++            sx={{ width: 110 }}
++            slotProps={{ htmlInput: { inputMode: "decimal", "aria-label": label } }}
++        />
++    );
++
++    return (
++        <Stack spacing={2}>
++            <TableContainer>
++                <Table size="small">
++                    <TableHead>
++                        <TableRow>
++                            <TableCell>Medición</TableCell>
++                            <TableCell>d<sub>min</sub> [m]</TableCell>
++                            <TableCell>f [Hz]</TableCell>
++                            <TableCell>λ [m]</TableCell>
++                            <TableCell>λ/2 [m]</TableCell>
++                            <TableCell />
++                        </TableRow>
++                    </TableHead>
++                    <TableBody>
++                        {rows.map((row, index) => (
++                            <TableRow key={row.id}>
++                                <TableCell>{index + 1}</TableCell>
++                                <TableCell>{cell(`d_min de la medición ${index + 1}`, row.dmin, (t) => update(row.id, (r) => ({ ...r, dmin: t })))}</TableCell>
++                                <TableCell>{cell(`f de la medición ${index + 1}`, row.f, (t) => update(row.id, (r) => ({ ...r, f: t })))}</TableCell>
++                                <TableCell>{cell(`λ de la medición ${index + 1}`, row.lambda, (t) => setLambda(row.id, t))}</TableCell>
++                                <TableCell>{cell(`λ/2 de la medición ${index + 1}`, row.half, (t) => setHalf(row.id, t))}</TableCell>
++                                <TableCell>
++                                    <IconButton size="small" onClick={() => removeRow(row.id)} aria-label={`Quitar la medición ${index + 1}`}>
++                                        <DeleteOutlineIcon fontSize="small" />
++                                    </IconButton>
++                                </TableCell>
++                            </TableRow>
++                        ))}
++                    </TableBody>
++                </Table>
++            </TableContainer>
++
++            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
++                <ButtonCB variant="outlined" startIcon={<AddIcon />} onClick={addRow}>
++                    Agregar medición
++                </ButtonCB>
++                <ButtonCB variant="outlined" startIcon={<ShowChartIcon />} onClick={() => setShowChart((v) => !v)}>
++                    {showChart ? "Ocultar gráfico" : "Mostrar gráfico f vs 1/λ"}
++                </ButtonCB>
++            </Stack>
++
++            <Collapse in={showChart} unmountOnExit>
++                <Stack spacing={1}>
++                    {fit ? (
++                        <Box>
++                            <Typography variant="body1">
++                                y = m·x + b &nbsp;·&nbsp; <b>m = {fit.m.toFixed(1)} m/s</b> &nbsp;·&nbsp; <b>b = {fit.b.toFixed(1)} Hz</b>
++                            </Typography>
++                            <Typography variant="caption" color="text.secondary">
++                                x = 1/λ, y = f, con {points.length} mediciones. Como f = v·(1/λ), la pendiente m es la velocidad del sonido.
++                            </Typography>
++                        </Box>
++                    ) : (
++                        <Typography variant="body2" color="text.secondary">
++                            {points.length === 0
++                                ? "Completa f y λ en al menos una fila para ver los puntos."
++                                : "Hacen falta al menos dos mediciones con distinta λ para el ajuste lineal."}
++                        </Typography>
++                    )}
++
++                    {points.length > 0 && (
++                        <Box sx={{ height: 360 }}>
++                            <ResponsiveLine<Serie>
++                                data={chartData}
++                                margin={{ top: 20, right: 30, bottom: 70, left: 80 }}
++                                xScale={{ type: "linear", min: 0, max: "auto" }}
++                                yScale={{ type: "linear", min: "auto", max: "auto" }}
++                                axisBottom={{ legend: "1/λ [m⁻¹]", legendOffset: 40, legendPosition: "middle" }}
++                                axisLeft={{ legend: "f [Hz]", legendOffset: -60, legendPosition: "middle" }}
++                                colors={(s) => (s.id === FIT_ID ? FIT_COLOR : POINTS_COLOR)}
++                                theme={generatePlotTheme(theme)}
++                                layers={["grid", "axes", FitLayer, PointsLayer, "mesh", "legends"]}
++                                useMesh={true}
++                                tooltip={Tooltip}
++                                legends={[{
++                                    anchor: "top-left",
++                                    direction: "column",
++                                    translateX: 10,
++                                    itemWidth: 130,
++                                    itemHeight: 20,
++                                    symbolSize: 10,
++                                    symbolShape: "circle",
++                                    itemTextColor: theme.palette.text.primary,
++                                }]}
++                            />
++                        </Box>
++                    )}
++                </Stack>
++            </Collapse>
++        </Stack>
++    );
++}
+-- 
+2.43.0
+
