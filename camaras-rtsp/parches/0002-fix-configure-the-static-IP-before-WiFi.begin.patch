@@ -1,0 +1,31 @@
+From 3684e0f97562241df665927e7e4ef9bf917bf403 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:52 -0300
+Subject: [PATCH 2/5] fix: configure the static IP before WiFi.begin()
+
+---
+ src/main.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index a1ee76d..265a19c 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -485,9 +485,12 @@ void staticIPHandle(const char *ssid, const char *password)
+   gateway.fromString(param_gateway.valueBuffer);
+   subnet.fromString(param_mask.valueBuffer);
+ 
+-  // WiFi connection
+-  WiFi.begin(ssid, password);
++  // [local kundt] config() BEFORE begin(). In the original order, if the first
++  // association failed, the core retried begin() from its event task before
++  // config() had marked the IP as static, and switched back to DHCP: a camera
++  // came up at .31 instead of .233, where go2rtc could not find it.
+   WiFi.config(local_IP, gateway, subnet);
++  WiFi.begin(ssid, password);
+ }
+ 
+ void readConfigFile()
+-- 
+2.43.0
+

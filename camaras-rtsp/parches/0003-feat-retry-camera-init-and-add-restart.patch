@@ -1,0 +1,85 @@
+From fed74e1c7923620f80e09a149948c317dd52b9a2 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:52 -0300
+Subject: [PATCH 3/5] feat: retry camera init and add /restart
+
+---
+ src/main.cpp | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index 265a19c..244d818 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -363,6 +363,43 @@ void on_config_saved()
+   update_camera_settings();
+ }
+ 
++// [local kundt] In the kit, some boards fail to find the sensor on power-up
++// (ESP_ERR_NOT_FOUND) and are fine after a reset. The original code tried three
++// times in setup() and then stayed without video until someone pressed RST.
++#define CAMERA_RETRY_MS 30000
++unsigned long next_camera_retry = 0;
++
++void retry_camera()
++{
++  if (camera_init_result == ESP_OK || millis() < next_camera_retry)
++    return;
++  next_camera_retry = millis() + CAMERA_RETRY_MS;
++  esp_camera_deinit();
++  camera_init_result = initialize_camera();
++  if (camera_init_result != ESP_OK)
++  {
++    log_e("Camera retry failed. Error: 0x%0x", camera_init_result);
++    return;
++  }
++  log_i("Camera initialized on retry");
++  update_camera_settings();
++  // If Wi-Fi is already up, on_connected() skipped the RTSP server: start it now.
++  if (iotWebConf.getState() == iotwebconf::NetworkState::OnLine)
++    start_rtsp_server();
++}
++
++// [local kundt] The status page has always had a Restart button pointing here,
++// but no handler existed: it answered 404.
++void handle_restart()
++{
++  log_v("handle_restart");
++  if (!web_server.authenticate(IOTWEBCONF_ADMIN_USER_NAME, iotWebConf.getApPasswordParameter()->valueBuffer))
++    return web_server.requestAuthentication();
++  web_server.send(200, "text/plain", "Restarting...");
++  delay(500);
++  ESP.restart();
++}
++
+ void setup()
+ {
+   // Disable brownout
+@@ -454,6 +491,7 @@ void setup()
+     log_e("Failed to initialize camera. Error: 0x%0x. Frame size: %s, frame rate: %d ms, jpeg quality: %d", camera_init_result, param_frame_size.value(), param_frame_duration.value(), param_jpg_quality.value());
+     delay(500);
+   }
++  next_camera_retry = millis() + CAMERA_RETRY_MS;
+ 
+   // Set up required URL handlers on the web server
+   web_server.on("/", HTTP_GET, handle_root);
+@@ -463,6 +501,8 @@ void setup()
+   web_server.on("/snapshot", HTTP_GET, handle_snapshot);
+   // Camera stream
+   web_server.on("/stream", HTTP_GET, handle_stream);
++  // [local kundt] Restart, linked from the status page
++  web_server.on("/restart", HTTP_GET, handle_restart);
+ 
+   web_server.onNotFound([]()
+                         { iotWebConf.handleNotFound(); });
+@@ -471,6 +511,7 @@ void setup()
+ void loop()
+ {
+   iotWebConf.doLoop();
++  retry_camera();
+ 
+   if (camera_server)
+     camera_server->doLoop();
+-- 
+2.43.0
+

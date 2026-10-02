@@ -1,0 +1,79 @@
+From 1b908f371589fc7a163f785ee3fc884ac324e8aa Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:52 -0300
+Subject: [PATCH 4/5] feat: firmware update over the web
+
+---
+ src/main.cpp | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index 244d818..40ea3af 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -17,6 +17,9 @@
+ #include <format_number.h>
+ #include <moustache.h>
+ #include <settings.h>
++// [local kundt] Firmware update over the web (see setup()).
++#include <HTTPUpdateServer.h>
++#include <Update.h>
+ 
+ // [Addition] Imports to handle flashing the JSON onto memory.
+ #include <LITTLEFS.h>
+@@ -99,6 +102,11 @@ DNSServer dnsServer;
+ std::unique_ptr<rtsp_server> camera_server;
+ // Web server
+ WebServer web_server(80);
++// [local kundt] Firmware update at /firmware, same credentials as /config.
++HTTPUpdateServer http_updater;
++// [local kundt] Set on the first write of a web update (see setup()).
++bool ota_running = false;
++unsigned long ota_last_progress = 0;
+ 
+ auto thingName = String(WIFI_SSID) + "-" + String(ESP.getEfuseMac(), 16);
+ IotWebConf iotWebConf(thingName.c_str(), &dnsServer, &web_server, WIFI_PASSWORD, CONFIG_VERSION);
+@@ -474,6 +482,25 @@ void setup()
+ #endif
+   // [addition] Pass the network configuration to the iotWebConf. 
+   iotWebConf.setWifiConnectionHandler(staticIPHandle);
++  // [local kundt] Cameras have no USB access once mounted: update them by web.
++  iotWebConf.setupUpdateServer(
++      [](const char *update_path)
++      { http_updater.setup(&web_server, update_path); },
++      [](const char *user_name, char *password)
++      { http_updater.updateCredentials(user_name, password); });
++  // [local kundt] Stop the camera before the first flash erase of a web update:
++  // with it running, the board hung at the first write and the interrupt
++  // watchdog reset it (TG1WDT_SYS_RESET), every time.
++  Update.onProgress([](size_t done, size_t total)
++                    {
++    ota_last_progress = millis();
++    if (!ota_running)
++    {
++      ota_running = true;
++      esp_camera_deinit();
++      camera_init_result = ESP_FAIL;
++      log_i("Web update started: camera stopped");
++    } });
+   iotWebConf.init();
+   readConfigFile();
+ 
+@@ -511,6 +538,14 @@ void setup()
+ void loop()
+ {
+   iotWebConf.doLoop();
++  if (ota_running)
++  {
++    // A finished update restarts the board. If the upload stalls or fails,
++    // nothing else would, and the camera is off: restart to get it back.
++    if (millis() - ota_last_progress > 20000)
++      ESP.restart();
++    return;
++  }
+   retry_camera();
+ 
+   if (camera_server)
+-- 
+2.43.0
+

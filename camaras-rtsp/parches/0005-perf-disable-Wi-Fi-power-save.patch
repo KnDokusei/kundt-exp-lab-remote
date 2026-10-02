@@ -1,0 +1,28 @@
+From da52f3d5657429def0e27cc0723520dec04b4680 Mon Sep 17 00:00:00 2001
+From: MATIAS <mnpn31@gmail.com>
+Date: Thu, 1 Oct 2026 17:23:52 -0300
+Subject: [PATCH 5/5] perf: disable Wi-Fi power save
+
+---
+ src/main.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/main.cpp b/src/main.cpp
+index 40ea3af..8e1e94f 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -358,6 +358,11 @@ void start_rtsp_server()
+ void on_connected()
+ {
+   log_v("on_connected");
++  // [local kundt] No Wi-Fi power save. With modem sleep the AP holds the TCP
++  // ACKs until the next DTIM, and RTSP over TCP (send window ~5.7 KB) stalled
++  // at 40-90 KiB/s. Called on every (re)connection, so it survives reconnects.
++  WiFi.setSleep(false);
++  log_i("Wi-Fi power save off, RSSI %d dBm", WiFi.RSSI());
+   // Start the RTSP Server if initialized
+   if (camera_init_result == ESP_OK)
+     start_rtsp_server();
+-- 
+2.43.0
+
