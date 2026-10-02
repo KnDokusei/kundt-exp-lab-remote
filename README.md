@@ -102,10 +102,6 @@ una serie de parches aplicable con `git am`, con su README.
 
 La entrega 2 quedó obsoleta antes de enviarse y no está en el repositorio.
 
-Este repositorio es **privado**, así que la entrega no se comparte por enlace:
-se envía como archivo o se da acceso de lectura a quien deba revisarla. Los
-parches son autocontenidos y no necesitan el resto del repositorio.
-
 ## Documentación
 
 El análisis de la migración, los procedimientos de prueba y el checklist previo
@@ -121,7 +117,8 @@ El diseño del experimento, los esquemáticos y la lógica de los cuatro módulo
 son obra suya. Este trabajo migra ese firmware conservando su comportamiento, y
 documenta las diferencias donde las hay.
 
-> **Licencia pendiente.** No hay archivo `LICENSE` a propósito: al ser un trabajo
-> derivado, la licencia corresponde definirla al autor original y al profesor a
-> cargo. Hasta entonces todos los derechos quedan reservados y el código no debe
-> redistribuirse sin su autorización.
+> **Licencia pendiente.** No hay archivo `LICENSE` todavía: al ser un trabajo
+> derivado, la licencia la definen el autor original y el profesor a cargo. El
+> repositorio se publica con su visto bueno y, mientras no haya licencia, todos
+> los derechos quedan reservados. Los parches de `camaras-rtsp/` son la
+> excepción: modifican código GPL-3.0 y se rigen por esa licencia.
