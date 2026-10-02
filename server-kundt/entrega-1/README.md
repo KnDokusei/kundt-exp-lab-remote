@@ -21,11 +21,11 @@ se convierte en rama con un `git am`:
 ```bash
 # curiousBeagleAPI, sobre 972df80
 git checkout -b kundt-tube main
-git am /ruta/a/entrega/api/*.patch
+git am /ruta/a/entrega-1/api/*.patch
 
 # curiousBeagleFront, sobre 0aac322
 git checkout -b kundt-tube main
-git am /ruta/a/entrega/front/*.patch
+git am /ruta/a/entrega-1/front/*.patch
 ```
 
 El nombre de rama sigue el de `electron-diffraction`, y los mensajes de commit

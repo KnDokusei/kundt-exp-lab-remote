@@ -91,7 +91,7 @@ Compilan la misma unidad de DSP que el firmware, con gcc.
 `server-kundt/` contiene el alta del experimento en **curiousBeagle**, el
 servidor del laboratorio (repositorios privados de otro equipo).
 
-`server-kundt/entrega/` es la entrega lista para revisar: serie de parches
+`server-kundt/entrega-1/` es la entrega lista para revisar: serie de parches
 aplicable con `git am`, con su README explicando qué toca, qué no toca y cómo
 montarlo.
 
